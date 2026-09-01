@@ -1,0 +1,8 @@
+module rmw_zzdds_test {
+  module msg {
+    struct KeyedRecord {
+      @key long key;
+      string label;
+    };
+  };
+};

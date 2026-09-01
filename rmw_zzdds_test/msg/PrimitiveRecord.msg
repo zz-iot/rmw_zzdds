@@ -1,0 +1,10 @@
+bool flag
+uint8 byte_value
+int16 count
+uint32 id
+int64 big_value
+float32 ratio
+float64 measurement
+string<=16 label
+uint16[3] samples
+int32[<=4] values

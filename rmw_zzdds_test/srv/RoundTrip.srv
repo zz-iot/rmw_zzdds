@@ -1,0 +1,5 @@
+int64 value
+string label
+---
+int64 result
+string label

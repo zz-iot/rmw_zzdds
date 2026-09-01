@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+
+import argparse
+
+from rosidl_typesupport_zzdds_cpp import generate_c
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Generate ROS C type support for zzdds')
+    parser.add_argument('--generator-arguments-file', required=True)
+    args = parser.parse_args()
+    generate_c(args.generator_arguments_file)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

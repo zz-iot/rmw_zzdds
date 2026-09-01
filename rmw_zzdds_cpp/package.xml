@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rmw_zzdds_cpp</name>
+  <version>0.1.0</version>
+  <description>Experimental ROS 2 RMW implementation backed by zzdds.</description>
+
+  <maintainer email="tsimpson@example.com">tsimpson</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rcutils</depend>
+  <depend>rmw</depend>
+  <depend>rmw_dds_common</depend>
+  <depend>rosidl_typesupport_zzdds_cpp</depend>
+  <depend>rosidl_typesupport_zzdds_c</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+  <member_of_group>rmw_implementations</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
