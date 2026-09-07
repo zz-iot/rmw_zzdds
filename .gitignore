@@ -3,6 +3,8 @@ install/
 log/
 .colcon/
 .cache/
+.ci-ws/
+__pycache__/
 compile_commands.json
 *.swp
 *.user
