@@ -189,21 +189,29 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Stable name for branch protection / the zzdds caller to gate on. Passes
-  # when the leg that ran succeeded; the other path is `skipped`, which is fine.
+  # Stable name for branch protection / the zzdds caller to gate on. Exactly
+  # one path runs per trigger (zzdds-pr, or setup-matrix + build-test); the
+  # other is `skipped`. Passes only when no leg failed/was cancelled AND a
+  # real test path actually executed -- so a setup-matrix failure (which
+  # skips build-test) cannot masquerade as green.
   result:
     name: rmw_zzdds CI result
-    needs: [zzdds-pr, build-test]
+    needs: [zzdds-pr, setup-matrix, build-test]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - run: |
           z='${{ needs.zzdds-pr.result }}'
-          m='${{ needs.build-test.result }}'
-          echo "zzdds-pr=$z  build-test=$m"
-          for r in "$z" "$m"; do
+          s='${{ needs.setup-matrix.result }}'
+          b='${{ needs.build-test.result }}'
+          echo "zzdds-pr=$z  setup-matrix=$s  build-test=$b"
+          for r in "$z" "$s" "$b"; do
             case "$r" in
               success|skipped) ;;
-              *) echo "::error::a required leg concluded '$r'"; exit 1 ;;
+              *) echo "::error::leg concluded '$r'"; exit 1 ;;
             esac
           done
+          if [ "$z" = skipped ] && [ "$b" = skipped ]; then
+            echo "::error::no test path executed (zzdds-pr and build-test both skipped)"
+            exit 1
+          fi
