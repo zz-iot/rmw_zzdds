@@ -11,10 +11,16 @@ name: CI
 #                                                  moving ros:rolling tag
 #   workflow_call              -- mode from inputs (zzdds's CI calls this with
 #                                 mode "zzdds-pr" and the zzdds commit under test)
-#   workflow_dispatch          -- pick the mode by hand
+#   workflow_dispatch          -- manual run; uses the full "schedule" matrix
 #
 # The (rmw_zzdds ref) axis is the checkout ref, chosen by the caller / trigger;
 # a "last rmw_zzdds release" leg joins the matrix once a release tag exists.
+#
+# Note: `mode` is a workflow_call input only. It is deliberately NOT also a
+# workflow_dispatch input -- workflow_call inputs cannot be `type: choice`, and
+# an input declared in both blocks with mismatched types makes the workflow
+# fail to start on push / pull_request / schedule (only manual dispatch still
+# launches). A manual run just takes the schedule matrix.
 
 on:
   pull_request:
@@ -23,12 +29,6 @@ on:
   schedule:
     - cron: "0 5 * * 1" # Mondays 05:00 UTC
   workflow_dispatch:
-    inputs:
-      mode:
-        description: "matrix to run"
-        type: choice
-        options: [pr, schedule]
-        default: pr
   workflow_call:
     inputs:
       mode:
@@ -70,10 +70,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_call" ]; then
             echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "schedule" ]; then
+          elif [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=schedule" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "mode=${{ inputs.mode || 'pr' }}" >> "$GITHUB_OUTPUT"
           else
             echo "mode=pr" >> "$GITHUB_OUTPUT"
           fi
