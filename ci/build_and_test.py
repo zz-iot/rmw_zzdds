@@ -553,9 +553,9 @@ def main(argv: list[str] | None = None) -> int:
     env = p.add_argument_group("environment")
     env.add_argument("--zig", metavar="PATH", help="zig binary (default: from PATH)")
     env.add_argument("--ros-target", choices=("digest", "rolling"), default=None,
-                     help="which ROS image leg this run represents (informational; the "
-                          "image itself is selected by the workflow's container:). Logged, "
-                          "and used only to note when the running image looks unexpected.")
+                     help='which ROS image leg this run represents ("digest" = pinned, '
+                          '"rolling" = moving tag). Logging only -- a label for the CI '
+                          "logs; the image itself is selected by the workflow's container:.")
     env.add_argument("--ros-distro", default=os.environ.get("ROS_DISTRO", "rolling"))
     env.add_argument("--ros-setup", default=None, metavar="PATH",
                      help="ROS setup.bash (default: /opt/ros/<distro>/setup.bash)")
