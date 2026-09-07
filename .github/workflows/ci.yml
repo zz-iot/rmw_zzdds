@@ -1,26 +1,29 @@
 name: CI
 
-# Builds rmw_zzdds against zzdds and runs its test suite, as a matrix over
-# (zzdds ref) x (ROS image). All the real logic lives in ci/build_and_test.py
-# so it is runnable and debuggable locally in a ros:rolling container -- see
-# ci/README.md.
+# Builds rmw_zzdds against zzdds and runs its test suite. All the real logic
+# lives in ci/build_and_test.py so it is runnable and debuggable locally in a
+# ros:rolling container -- see ci/README.md.
 #
-# Triggers:
-#   pull_request / push(main)  -- mode "pr":       zzdds main, pinned ROS digest
-#   schedule (weekly)          -- mode "schedule": + a non-gating leg on the
-#                                                  moving ros:rolling tag
-#   workflow_call              -- mode from inputs (zzdds's CI calls this with
-#                                 mode "zzdds-pr" and the zzdds commit under test)
-#   workflow_dispatch          -- manual run; uses the full "schedule" matrix
+# Two entry shapes:
 #
-# The (rmw_zzdds ref) axis is the checkout ref, chosen by the caller / trigger;
-# a "last rmw_zzdds release" leg joins the matrix once a release tag exists.
+#   * zzdds's CI calls this as a reusable workflow with mode "zzdds-pr" and the
+#     zzdds commit under test -> the single `zzdds-pr` job below (one leg,
+#     pinned ROS image, no dynamic matrix -- kept deliberately simple because
+#     it gates zzdds PRs).
 #
-# Note: `mode` is a workflow_call input only. It is deliberately NOT also a
+#   * rmw_zzdds's own pull_request / push / schedule / manual runs -> the
+#     `setup-matrix` + `build-test` matrix over (zzdds ref) x (ROS image):
+#       pr / push / manual : zzdds main, pinned ROS digest
+#       schedule           : + a non-gating leg on the moving ros:rolling tag
+#
+# `mode` is a workflow_call input only. It is deliberately NOT also a
 # workflow_dispatch input -- workflow_call inputs cannot be `type: choice`, and
 # an input declared in both blocks with mismatched types makes the workflow
-# fail to start on push / pull_request / schedule (only manual dispatch still
-# launches). A manual run just takes the schedule matrix.
+# fail to start on push / pull_request / schedule.
+#
+# NOTE: inside a reusable workflow `github.event_name` is the *caller's* event
+# (never "workflow_call"), so the workflow_call path is detected by
+# `inputs.mode` being non-empty, not by the event name.
 
 on:
   pull_request:
@@ -32,7 +35,7 @@ on:
   workflow_call:
     inputs:
       mode:
-        description: 'pr | schedule | zzdds-pr'
+        description: "pr | schedule | zzdds-pr"
         type: string
         default: zzdds-pr
       zzdds_repo:
@@ -50,12 +53,63 @@ on:
         default: ""
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.zzdds_ref }}
   cancel-in-progress: true
 
 jobs:
+  # ── zzdds regression gate (called from zzdds CI) ─────────────────────────
+  #
+  # One leg, pinned image, no setup-matrix / fromJson. `container.image` is the
+  # same pinned digest as ROS_ROLLING_DIGEST in ci/build_and_test.py -- keep
+  # the two in sync when bumping (both are one line, reviewed together).
+  zzdds-pr:
+    name: zzdds-pr
+    if: inputs.mode == 'zzdds-pr'
+    runs-on: ubuntu-latest
+    container:
+      image: ros@sha256:6536553889f36066b3ecea5e46d80c31c6d70aa66edb5d396beb8c22248c3524
+    steps:
+      - name: Check out rmw_zzdds
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.rmw_zzdds_repo || github.repository }}
+          ref: ${{ inputs.rmw_zzdds_ref || github.sha }}
+          path: rmw_zzdds
+          persist-credentials: false
+
+      - name: Check out zzdds
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.zzdds_repo }}
+          ref: ${{ inputs.zzdds_ref }}
+          path: zzdds
+          persist-credentials: false
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: "0.16.0"
+
+      - name: Build rmw_zzdds and run its tests
+        run: |
+          python3 rmw_zzdds/ci/build_and_test.py \
+            --rmw-zzdds-src rmw_zzdds --zzdds-src zzdds \
+            --ros-target digest \
+            --workspace "${{ runner.temp }}/rmw-ci-ws" --jobs 4 --test
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rmw-zzdds-test-results-zzdds-pr
+          path: ${{ runner.temp }}/rmw-ci-ws/ros_ws/build/*/test_results/**/*.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # ── rmw_zzdds's own PR / scheduled matrix ───────────────────────────────
   setup-matrix:
     name: Resolve matrix
+    if: inputs.mode != 'zzdds-pr'
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.build.outputs.matrix }}
@@ -68,7 +122,7 @@ jobs:
 
       - id: mode
         run: |
-          if [ "${{ github.event_name }}" = "workflow_call" ]; then
+          if [ -n "${{ inputs.mode }}" ]; then
             echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "mode=schedule" >> "$GITHUB_OUTPUT"
@@ -78,13 +132,13 @@ jobs:
 
       - id: build
         run: |
-          m=$(python3 ci/build_and_test.py --print-matrix "${{ steps.mode.outputs.mode }}" \
-                --zzdds-ref "${{ inputs.zzdds_ref }}")
+          m=$(python3 ci/build_and_test.py --print-matrix "${{ steps.mode.outputs.mode }}")
           echo "matrix=$m" >> "$GITHUB_OUTPUT"
           echo "$m"
 
   build-test:
     name: ${{ matrix.name }} / ${{ matrix.ros_target }}
+    if: inputs.mode != 'zzdds-pr'
     needs: setup-matrix
     runs-on: ubuntu-latest
     container:
@@ -93,7 +147,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(needs.setup-matrix.outputs.matrix) }}
+        # `|| '[]'` guards the case where setup-matrix was skipped (zzdds-pr
+        # mode): fromJson('') would error; an empty matrix just yields no legs.
+        include: ${{ fromJson(needs.setup-matrix.outputs.matrix || '[]') }}
 
     steps:
       - name: Check out rmw_zzdds
@@ -108,7 +164,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.zzdds_repo || 'zz-iot/zzdds' }}
-          ref: ${{ inputs.zzdds_ref || matrix.zzdds_ref }}
+          ref: ${{ matrix.zzdds_ref }}
           path: zzdds
           persist-credentials: false
 
@@ -120,11 +176,9 @@ jobs:
       - name: Build rmw_zzdds and run its tests
         run: |
           python3 rmw_zzdds/ci/build_and_test.py \
-            --rmw-zzdds-src rmw_zzdds \
-            --zzdds-src zzdds \
+            --rmw-zzdds-src rmw_zzdds --zzdds-src zzdds \
             --ros-target "${{ matrix.ros_target }}" \
-            --workspace "${{ runner.temp }}/rmw-ci-ws" \
-            --jobs 4 --test
+            --workspace "${{ runner.temp }}/rmw-ci-ws" --jobs 4 --test
 
       - name: Upload test results
         if: always()
@@ -135,14 +189,29 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Stable name for branch protection: fails if any gating leg failed
-  # (continue-on-error already absorbs the non-gating rolling leg).
+  # Stable name for branch protection / the zzdds caller to gate on. Exactly
+  # one path runs per trigger (zzdds-pr, or setup-matrix + build-test); the
+  # other is `skipped`. Passes only when no leg failed/was cancelled AND a
+  # real test path actually executed -- so a setup-matrix failure (which
+  # skips build-test) cannot masquerade as green.
   result:
     name: rmw_zzdds CI result
-    needs: build-test
+    needs: [zzdds-pr, setup-matrix, build-test]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - run: |
-          echo "build-test result: ${{ needs.build-test.result }}"
-          [ "${{ needs.build-test.result }}" = "success" ]
+          z='${{ needs.zzdds-pr.result }}'
+          s='${{ needs.setup-matrix.result }}'
+          b='${{ needs.build-test.result }}'
+          echo "zzdds-pr=$z  setup-matrix=$s  build-test=$b"
+          for r in "$z" "$s" "$b"; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::leg concluded '$r'"; exit 1 ;;
+            esac
+          done
+          if [ "$z" = skipped ] && [ "$b" = skipped ]; then
+            echo "::error::no test path executed (zzdds-pr and build-test both skipped)"
+            exit 1
+          fi

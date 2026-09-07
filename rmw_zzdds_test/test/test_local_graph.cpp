@@ -49,6 +49,37 @@ bool wait_for_count(
   return false;
 }
 
+// Poll an arbitrary predicate for up to 10s. The RMW graph is eventually
+// consistent, and different query APIs are backed by caches that converge
+// independently -- an assertion made immediately after a *different* polled
+// query can otherwise race the cache it reads.
+template<typename Predicate>
+bool wait_until(Predicate predicate)
+{
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  do {
+    if (predicate()) {return true;}
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  } while (std::chrono::steady_clock::now() < deadline);
+  return false;
+}
+
+// Poll a names-and-types query until `name`/`type` is present (or absent, if
+// `expect_present` is false), handling the per-iteration alloc/fini.
+template<typename QueryFunction>
+bool wait_for_names_and_types(
+  QueryFunction query, const char * name, const char * type, bool expect_present = true)
+{
+  return wait_until(
+    [&]() {
+      rmw_names_and_types_t values = rmw_get_zero_initialized_names_and_types();
+      if (query(&values) != RMW_RET_OK) {return false;}
+      const bool present = contains(values, name, type);
+      if (rmw_names_and_types_fini(&values) != RMW_RET_OK) {return false;}
+      return present == expect_present;
+    });
+}
+
 TEST(LocalGraph, reports_topics_services_and_node_ownership)
 {
   rcutils_allocator_t allocator = rcutils_get_default_allocator();
@@ -244,42 +275,45 @@ TEST(LocalGraph, counts_discovered_endpoints_and_removes_stale_entries)
       publisher_gid.data, endpoint_info.info_array[0].endpoint_gid, RMW_GID_STORAGE_SIZE));
   ASSERT_EQ(RMW_RET_OK, rmw_topic_endpoint_info_array_fini(&endpoint_info, &allocator));
 
-  rcutils_string_array_t node_names = rcutils_get_zero_initialized_string_array();
-  rcutils_string_array_t node_namespaces = rcutils_get_zero_initialized_string_array();
-  rcutils_string_array_t node_enclaves = rcutils_get_zero_initialized_string_array();
-  ASSERT_EQ(
-    RMW_RET_OK,
-    rmw_get_node_names_with_enclaves(
-      observer_node, &node_names, &node_namespaces, &node_enclaves));
-  bool found_remote_node = false;
-  for (size_t index = 0U; index < node_names.size; ++index) {
-    if (std::strcmp(node_names.data[index], "remote") == 0 &&
-      std::strcmp(node_namespaces.data[index], "/graph") == 0)
-    {
-      found_remote_node = true;
-    }
-  }
-  EXPECT_TRUE(found_remote_node);
-  ASSERT_EQ(RCUTILS_RET_OK, rcutils_string_array_fini(&node_enclaves));
-  ASSERT_EQ(RCUTILS_RET_OK, rcutils_string_array_fini(&node_namespaces));
-  ASSERT_EQ(RCUTILS_RET_OK, rcutils_string_array_fini(&node_names));
+  EXPECT_TRUE(
+    wait_until(
+      [&]() {
+        rcutils_string_array_t names = rcutils_get_zero_initialized_string_array();
+        rcutils_string_array_t namespaces = rcutils_get_zero_initialized_string_array();
+        rcutils_string_array_t enclaves = rcutils_get_zero_initialized_string_array();
+        if (rmw_get_node_names_with_enclaves(
+            observer_node, &names, &namespaces, &enclaves) != RMW_RET_OK)
+        {
+          return false;
+        }
+        bool found = false;
+        for (size_t index = 0U; index < names.size; ++index) {
+          if (std::strcmp(names.data[index], "remote") == 0 &&
+            std::strcmp(namespaces.data[index], "/graph") == 0)
+          {
+            found = true;
+          }
+        }
+        bool freed = rcutils_string_array_fini(&enclaves) == RCUTILS_RET_OK;
+        freed = (rcutils_string_array_fini(&namespaces) == RCUTILS_RET_OK) && freed;
+        freed = (rcutils_string_array_fini(&names) == RCUTILS_RET_OK) && freed;
+        return found && freed;
+      }));
 
-  rmw_names_and_types_t remote_topics = rmw_get_zero_initialized_names_and_types();
-  ASSERT_EQ(
-    RMW_RET_OK,
-    rmw_get_topic_names_and_types(observer_node, &allocator, false, &remote_topics));
-  EXPECT_TRUE(contains(
-      remote_topics, "/discovered_records", "rmw_zzdds_test/msg/PrimitiveRecord"));
-  ASSERT_EQ(RMW_RET_OK, rmw_names_and_types_fini(&remote_topics));
+  EXPECT_TRUE(
+    wait_for_names_and_types(
+      [&](rmw_names_and_types_t * out) {
+        return rmw_get_topic_names_and_types(observer_node, &allocator, false, out);
+      },
+      "/discovered_records", "rmw_zzdds_test/msg/PrimitiveRecord"));
 
-  remote_topics = rmw_get_zero_initialized_names_and_types();
-  ASSERT_EQ(
-    RMW_RET_OK,
-    rmw_get_publisher_names_and_types_by_node(
-      observer_node, &allocator, "remote", "/graph", false, &remote_topics));
-  EXPECT_TRUE(contains(
-      remote_topics, "/discovered_records", "rmw_zzdds_test/msg/PrimitiveRecord"));
-  ASSERT_EQ(RMW_RET_OK, rmw_names_and_types_fini(&remote_topics));
+  EXPECT_TRUE(
+    wait_for_names_and_types(
+      [&](rmw_names_and_types_t * out) {
+        return rmw_get_publisher_names_and_types_by_node(
+          observer_node, &allocator, "remote", "/graph", false, out);
+      },
+      "/discovered_records", "rmw_zzdds_test/msg/PrimitiveRecord"));
   ASSERT_EQ(RMW_RET_OK, rmw_destroy_publisher(remote_node, publisher));
   EXPECT_TRUE(wait_for_count(rmw_count_publishers, observer_node, "/discovered_records", 0U));
 
@@ -333,21 +367,19 @@ TEST(LocalGraph, counts_discovered_endpoints_and_removes_stale_entries)
     RMW_RET_OK,
     rmw_service_endpoint_info_array_fini(&service_info, &allocator));
 
-  rmw_names_and_types_t remote_services = rmw_get_zero_initialized_names_and_types();
-  ASSERT_EQ(
-    RMW_RET_OK,
-    rmw_get_service_names_and_types(observer_node, &allocator, &remote_services));
-  EXPECT_TRUE(contains(
-      remote_services, "/discovered_round_trip", "rmw_zzdds_test/srv/RoundTrip"));
-  ASSERT_EQ(RMW_RET_OK, rmw_names_and_types_fini(&remote_services));
-  remote_services = rmw_get_zero_initialized_names_and_types();
-  ASSERT_EQ(
-    RMW_RET_OK,
-    rmw_get_service_names_and_types_by_node(
-      observer_node, &allocator, "remote", "/graph", &remote_services));
-  EXPECT_TRUE(contains(
-      remote_services, "/discovered_round_trip", "rmw_zzdds_test/srv/RoundTrip"));
-  ASSERT_EQ(RMW_RET_OK, rmw_names_and_types_fini(&remote_services));
+  EXPECT_TRUE(
+    wait_for_names_and_types(
+      [&](rmw_names_and_types_t * out) {
+        return rmw_get_service_names_and_types(observer_node, &allocator, out);
+      },
+      "/discovered_round_trip", "rmw_zzdds_test/srv/RoundTrip"));
+  EXPECT_TRUE(
+    wait_for_names_and_types(
+      [&](rmw_names_and_types_t * out) {
+        return rmw_get_service_names_and_types_by_node(
+          observer_node, &allocator, "remote", "/graph", out);
+      },
+      "/discovered_round_trip", "rmw_zzdds_test/srv/RoundTrip"));
   EXPECT_TRUE(wait_for_count(
       rmw_count_services, observer_node, "/discovered_round_trip", 1U));
   ASSERT_EQ(RMW_RET_OK, rmw_destroy_service(remote_node, remote_service));
@@ -384,15 +416,15 @@ TEST(LocalGraph, counts_discovered_endpoints_and_removes_stale_entries)
   EXPECT_EQ(2U, client_info.info_array[0].endpoint_count);
   ASSERT_EQ(RMW_RET_OK, rmw_service_endpoint_info_array_fini(&client_info, &allocator));
 
-  rmw_names_and_types_t remote_clients = rmw_get_zero_initialized_names_and_types();
-  ASSERT_EQ(
-    RMW_RET_OK,
-    rmw_get_client_names_and_types_by_node(
-      observer_node, &allocator, "remote", "/graph", &remote_clients));
-  EXPECT_TRUE(contains(
-      remote_clients, "/discovered_client", "rmw_zzdds_test/srv/RoundTrip"));
-  ASSERT_EQ(RMW_RET_OK, rmw_names_and_types_fini(&remote_clients));
-  remote_services = rmw_get_zero_initialized_names_and_types();
+  EXPECT_TRUE(
+    wait_for_names_and_types(
+      [&](rmw_names_and_types_t * out) {
+        return rmw_get_client_names_and_types_by_node(
+          observer_node, &allocator, "remote", "/graph", out);
+      },
+      "/discovered_client", "rmw_zzdds_test/srv/RoundTrip"));
+
+  rmw_names_and_types_t remote_services = rmw_get_zero_initialized_names_and_types();
   ASSERT_EQ(
     RMW_RET_OK,
     rmw_get_service_names_and_types(observer_node, &allocator, &remote_services));
