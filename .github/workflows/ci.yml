@@ -1,0 +1,150 @@
+name: CI
+
+# Builds rmw_zzdds against zzdds and runs its test suite, as a matrix over
+# (zzdds ref) x (ROS image). All the real logic lives in ci/build_and_test.py
+# so it is runnable and debuggable locally in a ros:rolling container -- see
+# ci/README.md.
+#
+# Triggers:
+#   pull_request / push(main)  -- mode "pr":       zzdds main, pinned ROS digest
+#   schedule (weekly)          -- mode "schedule": + a non-gating leg on the
+#                                                  moving ros:rolling tag
+#   workflow_call              -- mode from inputs (zzdds's CI calls this with
+#                                 mode "zzdds-pr" and the zzdds commit under test)
+#   workflow_dispatch          -- pick the mode by hand
+#
+# The (rmw_zzdds ref) axis is the checkout ref, chosen by the caller / trigger;
+# a "last rmw_zzdds release" leg joins the matrix once a release tag exists.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 5 * * 1" # Mondays 05:00 UTC
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "matrix to run"
+        type: choice
+        options: [pr, schedule]
+        default: pr
+  workflow_call:
+    inputs:
+      mode:
+        description: 'pr | schedule | zzdds-pr'
+        type: string
+        default: zzdds-pr
+      zzdds_repo:
+        type: string
+        default: zz-iot/zzdds
+      zzdds_ref:
+        description: "zzdds ref under test (mode zzdds-pr)"
+        type: string
+        default: ""
+      rmw_zzdds_repo:
+        type: string
+        default: zz-iot/rmw_zzdds
+      rmw_zzdds_ref:
+        type: string
+        default: ""
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  setup-matrix:
+    name: Resolve matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.rmw_zzdds_repo || github.repository }}
+          ref: ${{ inputs.rmw_zzdds_ref || github.sha }}
+          persist-credentials: false
+
+      - id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_call" ]; then
+            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "mode=schedule" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ inputs.mode || 'pr' }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=pr" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: build
+        run: |
+          m=$(python3 ci/build_and_test.py --print-matrix "${{ steps.mode.outputs.mode }}" \
+                --zzdds-ref "${{ inputs.zzdds_ref }}")
+          echo "matrix=$m" >> "$GITHUB_OUTPUT"
+          echo "$m"
+
+  build-test:
+    name: ${{ matrix.name }} / ${{ matrix.ros_target }}
+    needs: setup-matrix
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.ros_image }}
+    continue-on-error: ${{ !matrix.gating }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.setup-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Check out rmw_zzdds
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.rmw_zzdds_repo || github.repository }}
+          ref: ${{ inputs.rmw_zzdds_ref || github.sha }}
+          path: rmw_zzdds
+          persist-credentials: false
+
+      - name: Check out zzdds
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.zzdds_repo || 'zz-iot/zzdds' }}
+          ref: ${{ inputs.zzdds_ref || matrix.zzdds_ref }}
+          path: zzdds
+          persist-credentials: false
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: "0.16.0"
+
+      - name: Build rmw_zzdds and run its tests
+        run: |
+          python3 rmw_zzdds/ci/build_and_test.py \
+            --rmw-zzdds-src rmw_zzdds \
+            --zzdds-src zzdds \
+            --ros-target "${{ matrix.ros_target }}" \
+            --workspace "${{ runner.temp }}/rmw-ci-ws" \
+            --jobs 4 --test
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rmw-zzdds-test-results-${{ matrix.name }}-${{ matrix.ros_target }}
+          path: ${{ runner.temp }}/rmw-ci-ws/ros_ws/build/*/test_results/**/*.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Stable name for branch protection: fails if any gating leg failed
+  # (continue-on-error already absorbs the non-gating rolling leg).
+  result:
+    name: rmw_zzdds CI result
+    needs: build-test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "build-test result: ${{ needs.build-test.result }}"
+          [ "${{ needs.build-test.result }}" = "success" ]

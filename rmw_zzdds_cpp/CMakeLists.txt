@@ -40,11 +40,16 @@ target_include_directories(rmw_zzdds_cpp
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
-ament_target_dependencies(
-  rmw_zzdds_cpp rcutils rmw rmw_dds_common
-  rosidl_typesupport_zzdds_c rosidl_typesupport_zzdds_cpp)
+# ament_target_dependencies() was removed from Rolling; link the modern
+# namespaced targets directly. ament_export_dependencies() below still
+# propagates these to downstream consumers.
 target_link_libraries(
   rmw_zzdds_cpp
+  rcutils::rcutils
+  rmw::rmw
+  rmw_dds_common::rmw_dds_common_library
+  rosidl_typesupport_zzdds_c::rosidl_typesupport_zzdds_c
+  rosidl_typesupport_zzdds_cpp::rosidl_typesupport_zzdds_cpp
   ZZDDS::zzdds
   rmw_dds_common::rmw_dds_common__rosidl_typesupport_zzdds_cpp)
 
@@ -74,8 +79,7 @@ if(BUILD_TESTING)
   ament_add_gtest(test_lifecycle test/test_lifecycle.cpp)
   if(TARGET test_lifecycle)
     target_compile_features(test_lifecycle PRIVATE cxx_std_17)
-    target_link_libraries(test_lifecycle rmw_zzdds_cpp)
-    ament_target_dependencies(test_lifecycle rcutils rmw)
+    target_link_libraries(test_lifecycle rmw_zzdds_cpp rcutils::rcutils rmw::rmw)
     set_tests_properties(test_lifecycle PROPERTIES
       ENVIRONMENT_MODIFICATION
         "LD_LIBRARY_PATH=path_list_prepend:${_zzdds_library_dir}"

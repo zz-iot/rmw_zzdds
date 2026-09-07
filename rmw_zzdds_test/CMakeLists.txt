@@ -16,6 +16,12 @@ if(BUILD_TESTING)
   find_package(rmw_zzdds_cpp REQUIRED)
   find_package(ZZDDS CONFIG REQUIRED)
 
+  # libzzdds.so is consumed from its own install prefix (zig-out), which is
+  # not on the default loader path; the tests that reach rmw_zzdds_cpp ->
+  # libzzdds at runtime need it prepended. Mirrors rmw_zzdds_cpp/CMakeLists.txt.
+  get_target_property(_zzdds_library ZZDDS::zzdds IMPORTED_LOCATION)
+  get_filename_component(_zzdds_library_dir "${_zzdds_library}" DIRECTORY)
+
   rosidl_get_typesupport_target(
     zzdds_typesupport_target ${PROJECT_NAME} rosidl_typesupport_zzdds_cpp)
   rosidl_get_typesupport_target(
@@ -27,6 +33,9 @@ if(BUILD_TESTING)
       ${zzdds_typesupport_target}
       rmw_zzdds_cpp::rmw_zzdds_cpp
       ZZDDS::zzdds)
+    set_tests_properties(test_static_type_support PROPERTIES
+      ENVIRONMENT_MODIFICATION
+        "LD_LIBRARY_PATH=path_list_prepend:${_zzdds_library_dir}")
   endif()
 
   ament_add_gtest(test_service_round_trip test/test_service_round_trip.cpp)
@@ -37,6 +46,9 @@ if(BUILD_TESTING)
       ${zzdds_typesupport_target}
       rmw_zzdds_cpp::rmw_zzdds_cpp
       ZZDDS::zzdds)
+    set_tests_properties(test_service_round_trip PROPERTIES
+      ENVIRONMENT_MODIFICATION
+        "LD_LIBRARY_PATH=path_list_prepend:${_zzdds_library_dir}")
   endif()
 
   ament_add_gtest(test_incompatible_qos_event test/test_incompatible_qos_event.cpp)
@@ -46,6 +58,9 @@ if(BUILD_TESTING)
       ${zzdds_typesupport_target}
       rmw_zzdds_cpp::rmw_zzdds_cpp
       ZZDDS::zzdds)
+    set_tests_properties(test_incompatible_qos_event PROPERTIES
+      ENVIRONMENT_MODIFICATION
+        "LD_LIBRARY_PATH=path_list_prepend:${_zzdds_library_dir}")
   endif()
 
   ament_add_gtest(test_local_graph test/test_local_graph.cpp)
@@ -56,6 +71,9 @@ if(BUILD_TESTING)
       ${zzdds_typesupport_target}
       rmw_zzdds_cpp::rmw_zzdds_cpp
       ZZDDS::zzdds)
+    set_tests_properties(test_local_graph PROPERTIES
+      ENVIRONMENT_MODIFICATION
+        "LD_LIBRARY_PATH=path_list_prepend:${_zzdds_library_dir}")
   endif()
 endif()
 
