@@ -484,6 +484,9 @@ def run(args: argparse.Namespace) -> int:
             src=args.zzdds_src, repo=args.zzdds_repo, ref=args.zzdds_ref,
             dest=zzdds_dest, label="zzdds",
         )
+        if args.ros_target:
+            print(f"[info] ros-target={args.ros_target}  ROS_DISTRO={args.ros_distro}",
+                  flush=True)
         full = args.rolling_repos == "overlay"
         if not full:
             print("[warn] --rolling-repos skip: building/testing only the zzdds type "
@@ -549,6 +552,10 @@ def main(argv: list[str] | None = None) -> int:
 
     env = p.add_argument_group("environment")
     env.add_argument("--zig", metavar="PATH", help="zig binary (default: from PATH)")
+    env.add_argument("--ros-target", choices=("digest", "rolling"), default=None,
+                     help="which ROS image leg this run represents (informational; the "
+                          "image itself is selected by the workflow's container:). Logged, "
+                          "and used only to note when the running image looks unexpected.")
     env.add_argument("--ros-distro", default=os.environ.get("ROS_DISTRO", "rolling"))
     env.add_argument("--ros-setup", default=None, metavar="PATH",
                      help="ROS setup.bash (default: /opt/ros/<distro>/setup.bash)")
