@@ -33,11 +33,12 @@ Design notes
 * Sources are copied into a scratch workspace before anything is built, so
   read-only mounts and pinned ``git`` checkouts both work, and a build never
   writes into the caller's tree.
-* The set of packages built and tested is intentionally small (the wired
-  ``BUILD_TESTING`` gtests). The hooks for the follow-on work -- the upstream
-  ``test_rmw_implementation`` suites and an overlay build of the pinned
-  ``ci/rolling.repos`` revisions -- are present but stubbed; see
-  ``run_upstream_rmw_tests`` and ``--rolling-repos overlay``.
+* A full ``--rolling-repos overlay`` build runs two test layers: this repo's
+  own ``BUILD_TESTING`` gtests, then the upstream ``test_rmw_implementation``
+  conformance suites (publisher / subscription / service / graph / wait-set /
+  events) with ``RMW_IMPLEMENTATION=rmw_zzdds_cpp``. The upstream layer is on
+  by default; ``--no-upstream-tests`` skips it and ``--rolling-repos skip``
+  (the fast type-support-only smoke) runs neither.
 """
 
 from __future__ import annotations
@@ -85,6 +86,24 @@ TEST_PACKAGES = [
     "rmw_zzdds_cpp",
     "rmw_zzdds_test",
 ]
+
+# The upstream conformance package, built + tested when --upstream-tests is set
+# (the default for a full overlay build). `test_rmw_implementation` lives in the
+# `rmw_implementation` repo already pinned in ci/rolling.repos; `--packages-up-to`
+# pulls the rest of its tree. It has no dependency edge to rmw_zzdds_cpp, and its
+# CMake enumerates RMW implementations from the ament index at configure time --
+# so, exactly like rmw_dds_common (see the TYPESUPPORT_PACKAGES note), it must be
+# built in a pass *after* rmw_zzdds_cpp is installed, or it silently generates no
+# rmw_zzdds_cpp tests. Hence the dedicated pass 3 in colcon_build().
+UPSTREAM_TEST_PACKAGES = [
+    "test_rmw_implementation",
+]
+
+# ctest name filter selecting just the rmw_zzdds_cpp-parameterised conformance
+# tests (`test_publisher__rmw_zzdds_cpp`, `test_subscription__rmw_zzdds_cpp`, ...).
+# Excludes `test_rmw_implementation`'s own lint tests and any tests it generates
+# for other RMW implementations that happen to be installed in the image.
+UPSTREAM_TEST_CTEST_FILTER = "_rmw_zzdds_cpp"
 
 # The zzdds build flags rmw_zzdds's CMake consume path requires: the C ABI
 # (dcps.h / libzzdds) plus the C++ generated implementation sources that
@@ -393,7 +412,8 @@ def _colcon_build_cmd(packages: list[str], zzdds_prefix: Path, *, jobs: int, tes
 
 
 def colcon_build(
-    ws: Path, zzdds_prefix: Path, *, ros_setup: Path, jobs: int, testing: bool, full: bool
+    ws: Path, zzdds_prefix: Path, *, ros_setup: Path, jobs: int, testing: bool, full: bool,
+    upstream_tests: bool = False,
 ) -> None:
     _require("colcon", hint="apt-get install -y python3-colcon-common-extensions")
     setup = ws / "install" / "setup.bash"
@@ -417,6 +437,20 @@ def colcon_build(
         ros_setup=ros_setup, cwd=ws, timeout=3600, label="colcon build (pass 2: rmw)",
         extra_setup=setup,
     )
+    if not upstream_tests:
+        return
+
+    # Pass 3: the upstream conformance package, with passes 1-2 install/ sourced
+    # so rmw_zzdds_cpp is already registered in the ament index when
+    # test_rmw_implementation's CMake enumerates RMW implementations
+    # (see UPSTREAM_TEST_PACKAGES). Always BUILD_TESTING=ON -- the point of the
+    # pass is its gtests; run() only sets upstream_tests when --test is in play.
+    _bash(
+        _colcon_build_cmd(UPSTREAM_TEST_PACKAGES, zzdds_prefix, jobs=jobs, testing=True),
+        ros_setup=ros_setup, cwd=ws, timeout=3000,
+        label="colcon build (pass 3: test_rmw_implementation)",
+        extra_setup=setup,
+    )
 
 
 def colcon_test(ws: Path, zzdds_prefix: Path, *, ros_setup: Path, jobs: int, full: bool) -> None:
@@ -438,22 +472,58 @@ def colcon_test(ws: Path, zzdds_prefix: Path, *, ros_setup: Path, jobs: int, ful
           label="colcon test-result")
 
 
-def run_upstream_rmw_tests(ws: Path, *, ros_setup: Path) -> None:
-    """FOLLOW-ON HOOK -- not implemented.
+def run_upstream_rmw_tests(ws: Path, *, zzdds_prefix: Path, ros_setup: Path, jobs: int) -> None:
+    """Run the upstream `test_rmw_implementation` conformance suites against
+    rmw_zzdds_cpp.
 
-    docs/testing.md describes running the upstream `test_rmw_implementation`
-    conformance suites (publisher / subscription / QoS / graph / CFT / loan)
-    with RMW_IMPLEMENTATION=rmw_zzdds_cpp against the `test_rmw_implementation`
-    package from the pinned `rmw_implementation` checkout in ci/rolling.repos.
-    That package is not currently a dependency of any package here, so wiring
-    it up means: build with --rolling-repos overlay (to get the pinned
-    `rmw_implementation`), add `test_rmw_implementation` to BUILD_PACKAGES,
-    then `colcon test --packages-select test_rmw_implementation` with the env
-    var set. Kept as a named seam so the follow-on is a localized change.
+    The package itself is built in colcon_build()'s pass 3 (see
+    UPSTREAM_TEST_PACKAGES). Here we `colcon test` just that package, filtered
+    with ctest `-R` to the rmw_zzdds_cpp-parameterised tests -- the upstream
+    CMake also generates a copy for every other RMW implementation present in
+    the image, and we neither want to run those nor its own lint tests.
+
+    `RMW_IMPLEMENTATION` is exported as a belt-and-braces default; the
+    generated per-implementation tests set it themselves via ctest ENVIRONMENT.
+    Tests run serially (no ctest `-j`): each spins up live DDS discovery and
+    parallel runs cross-talk on the default domain.
+
+    A filter that selects nothing -- `test_rmw_implementation` configured
+    without `rmw_zzdds_cpp` in the ament index, so no rmw_zzdds_cpp tests were
+    generated -- must be a hard failure, not a false green. Two guards: an
+    explicit preflight count, and `--no-tests=error` on the run itself (ctest's
+    own no-match exit status is version-dependent).
     """
-    raise NotImplementedError(
-        "upstream test_rmw_implementation suites are a follow-on; see "
-        "run_upstream_rmw_tests.__doc__ and docs/testing.md"
+    setup = ws / "install" / "setup.bash"
+    build_dir = ws / "build" / "test_rmw_implementation"
+
+    preflight = (
+        f'n=$(ctest --test-dir "{build_dir}" -N -R {UPSTREAM_TEST_CTEST_FILTER} '
+        f"2>/dev/null | sed -n 's/^Total Tests: //p' || true)\n"
+        f'echo "test_rmw_implementation: ${{n:-0}} rmw_zzdds_cpp conformance test(s) selected"\n'
+        f'[ "${{n:-0}}" -gt 0 ] || {{ echo "FAIL: test_rmw_implementation generated no '
+        f'rmw_zzdds_cpp tests -- rmw_zzdds_cpp was not discovered in the ament index '
+        f'during pass 3" >&2; exit 1; }}'
+    )
+    _bash(preflight, ros_setup=ros_setup, cwd=ws, timeout=120,
+          label="preflight: rmw_zzdds_cpp conformance tests exist", extra_setup=setup)
+
+    script = (
+        f'export LD_LIBRARY_PATH="{zzdds_prefix / "lib"}:${{LD_LIBRARY_PATH:-}}"\n'
+        f"export RMW_IMPLEMENTATION=rmw_zzdds_cpp\n"
+        f"colcon test "
+        f"--packages-select {' '.join(UPSTREAM_TEST_PACKAGES)} "
+        f"--event-handlers console_direct+ "
+        f"--return-code-on-test-failure "
+        f"--parallel-workers {jobs} "
+        f"--ctest-args --no-tests=error -R {UPSTREAM_TEST_CTEST_FILTER}"
+    )
+    _bash(script, ros_setup=ros_setup, cwd=ws, timeout=3600,
+          label="colcon test (test_rmw_implementation)", extra_setup=setup)
+    _bash(
+        f'colcon test-result --verbose '
+        f'--test-result-base "{ws / "build" / "test_rmw_implementation"}"',
+        ros_setup=ros_setup, cwd=ws, timeout=120,
+        label="colcon test-result (test_rmw_implementation)",
     )
 
 
@@ -491,25 +561,40 @@ def run(args: argparse.Namespace) -> int:
         if not full:
             print("[warn] --rolling-repos skip: building/testing only the zzdds type "
                   "support packages; the RMW itself needs the overlay.", flush=True)
+        # The upstream test_rmw_implementation conformance suites need the full
+        # overlay build (the RMW itself) and something to run (--test). Warn
+        # rather than fail on a contradictory combination -- --rolling-repos
+        # skip / --no-test are legitimate fast paths.
+        run_upstream = args.upstream_tests
+        if run_upstream and not full:
+            print("[warn] --upstream-tests ignored: needs --rolling-repos overlay "
+                  "(the RMW itself is not built in skip mode).", flush=True)
+            run_upstream = False
+        if run_upstream and not args.test:
+            print("[warn] --upstream-tests ignored: nothing to run with --no-test.",
+                  flush=True)
+            run_upstream = False
+
         zzdds_prefix = build_zzdds(zzdds_src, jobs=args.jobs)
         make_workspace(ros_ws, rmw_src, rolling_repos=args.rolling_repos, ros_setup=ros_setup)
         if not args.skip_rosdep:
             rosdep_install(ros_ws, ros_setup=ros_setup, ros_distro=args.ros_distro,
                            skip_keys=args.rosdep_skip_keys)
         colcon_build(ros_ws, zzdds_prefix, ros_setup=ros_setup, jobs=args.jobs,
-                     testing=args.test, full=full)
-        if args.upstream_tests:
-            run_upstream_rmw_tests(ros_ws, ros_setup=ros_setup)
+                     testing=args.test, full=full, upstream_tests=run_upstream)
         if args.test:
             colcon_test(ros_ws, zzdds_prefix, ros_setup=ros_setup, jobs=args.jobs, full=full)
+        if run_upstream:
+            run_upstream_rmw_tests(ros_ws, zzdds_prefix=zzdds_prefix, ros_setup=ros_setup,
+                                   jobs=args.jobs)
     except StepError as e:
         print(f"\nFAIL: {e}", file=sys.stderr)
         return 1
-    except NotImplementedError as e:
-        print(f"\nFAIL (not implemented): {e}", file=sys.stderr)
-        return 3
 
-    print(f"\n[ok] rmw_zzdds build{' + test' if args.test else ''} passed "
+    tail = " + test" if args.test else ""
+    if run_upstream:
+        tail += " + upstream conformance"
+    print(f"\n[ok] rmw_zzdds build{tail} passed "
           f"({time.monotonic() - started:.0f}s total)", flush=True)
     return 0
 
@@ -540,8 +625,13 @@ def main(argv: list[str] | None = None) -> int:
                        help="run colcon test after building (default)")
     build.add_argument("--no-test", dest="test", action="store_false",
                        help="build only")
-    build.add_argument("--upstream-tests", action="store_true",
-                       help="(follow-on, not implemented) also run test_rmw_implementation")
+    build.add_argument("--upstream-tests", dest="upstream_tests", action="store_true",
+                       default=True,
+                       help="also build + run the upstream test_rmw_implementation "
+                            "conformance suites against rmw_zzdds_cpp (default; needs "
+                            "--rolling-repos overlay + --test)")
+    build.add_argument("--no-upstream-tests", dest="upstream_tests", action="store_false",
+                       help="skip the upstream test_rmw_implementation conformance suites")
     build.add_argument("--skip-rosdep", action="store_true",
                        help="assume ROS deps are already installed")
     build.add_argument("--rosdep-skip-keys", default=DEFAULT_ROSDEP_SKIP_KEYS,
