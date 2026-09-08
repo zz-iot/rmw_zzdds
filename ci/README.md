@@ -16,19 +16,25 @@ suite. It is the single entry point for:
 2. Assemble a colcon workspace with rmw_zzdds and, by default, the pinned
    revisions from [`rolling.repos`](rolling.repos) (`--rolling-repos overlay`).
 3. `rosdep install` the remaining system/ROS dependencies.
-4. Build in two `colcon` passes against the same workspace:
+4. Build in up to three `colcon` passes against the same workspace:
    - pass 1: the zzdds type support packages;
    - pass 2: `rmw_dds_common` (rebuilt so it picks up the zzdds type support)
-     and `rmw_zzdds_cpp` / `rmw_zzdds_test`.
-   The split is required: rmw_zzdds includes
+     and `rmw_zzdds_cpp` / `rmw_zzdds_test`;
+   - pass 3 (unless `--no-upstream-tests`): `test_rmw_implementation`.
+   The splits are required: rmw_zzdds includes
    `rmw_dds_common/...__rosidl_typesupport_zzdds_cpp.hpp`, which only exists if
-   `rmw_dds_common` is built with the zzdds type support already discoverable,
-   and there is no dependency edge to force that ordering in one pass.
+   `rmw_dds_common` is built with the zzdds type support already discoverable;
+   and `test_rmw_implementation` enumerates RMW implementations from the ament
+   index at configure time, so `rmw_zzdds_cpp` must already be installed. There
+   is no dependency edge to force either ordering in one pass.
 5. `colcon test` the wired gtest suites and print the results.
+6. Unless `--no-upstream-tests`: `colcon test test_rmw_implementation` with
+   `RMW_IMPLEMENTATION=rmw_zzdds_cpp`, filtered (ctest `-R _rmw_zzdds_cpp`) to
+   the rmw_zzdds_cpp-parameterised conformance tests, run serially.
 
 `--rolling-repos skip` builds and tests only the zzdds type support packages
 against the ambient ROS install — a fast "did a zzdds header break rosidl
-codegen" smoke, not a build of the RMW itself.
+codegen" smoke, not a build of the RMW itself (and no upstream conformance).
 
 ## Run it locally
 
@@ -52,7 +58,8 @@ podman run --rm \
 `--zzdds-src` / `--rmw-zzdds-src` take a local checkout; drop them and pass
 `--zzdds-ref` / `--rmw-zzdds-ref` to clone a specific commit from github.com
 instead. `--print-matrix {pr,schedule,zzdds-pr}` emits the workflow's build
-matrix as JSON and exits.
+matrix as JSON and exits. Add `--no-upstream-tests` to skip the
+`test_rmw_implementation` layer for a faster local iteration.
 
 ## The pinned ROS image
 
@@ -64,11 +71,16 @@ passes.
 
 ## Follow-on work
 
-- **Upstream RMW conformance suites.** `docs/testing.md` describes running
-  `test_rmw_implementation` (publisher / subscription / QoS / graph / CFT /
-  loan) with `RMW_IMPLEMENTATION=rmw_zzdds_cpp`. That package is not yet a
-  dependency of anything here; the seam is `run_upstream_rmw_tests()` +
-  `--upstream-tests` in `build_and_test.py`.
+- **Restrict the pass-3 build to rmw_zzdds_cpp.** `test_rmw_implementation`'s
+  CMake compiles its test sources once per RMW implementation found in the
+  image (fastrtps, cyclonedds, …); the ctest `-R` filter drops the others from
+  the *run*, but they are still *built*. If pass 3 build time becomes a
+  problem, restrict it (e.g. `RMW_IMPLEMENTATIONS=rmw_zzdds_cpp`, version
+  permitting) rather than widening the filter.
+- **Promote/quarantine per suite.** The upstream layer is currently all-or-
+  nothing and gating on every leg. If a specific suite proves flaky under
+  zzdds's discovery timing, split the `-R` filter so the stable suites keep
+  gating while the flaky one runs non-gating.
 - **Release-axis matrix legs.** `build_matrix()` adds a "last zzdds release"
   leg when given `--zzdds-release`; a "last rmw_zzdds release" leg is a
   checkout-ref change in `ci.yml`. Both are inert until the first release tags.

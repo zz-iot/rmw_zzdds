@@ -55,13 +55,21 @@ or indirect leaks.
 The generated type-support, RMW serialization adapter, data plane, and wait-set
 foundation also pass their focused suites under ASan, LSan, and UBSan.
 
-## Upstream RMW status
+## Upstream RMW conformance (`test_rmw_implementation`)
 
-Against the pinned Rolling `test_rmw_implementation` checkout, the publisher
-suite passes all 18 tests and the subscription suite passes all 32 tests,
-including the loaned-message API cases.
+`ci/build_and_test.py` builds `test_rmw_implementation` from the pinned
+`rmw_implementation` revision (`ci/rolling.repos`) in a third `colcon` pass and
+runs it with `RMW_IMPLEMENTATION=rmw_zzdds_cpp`, filtered (ctest
+`-R _rmw_zzdds_cpp`) to the rmw_zzdds_cpp-parameterised tests and run serially.
+This is on by default in every workflow job — the PR / scheduled matrix and the
+`zzdds-pr` regression gate — and locally unless `--no-upstream-tests` is
+passed. It covers the upstream publisher, subscription, service, client, graph,
+wait-set, and event suites (including the loaned-message API cases).
 
-The passing subscription cases include a ROS C-layout
+The last recorded local run passed the publisher suite (18 tests) and the
+subscription suite (32 tests); the CI run is authoritative once green.
+
+The subscription cases include a ROS C-layout
 `test_msgs/UnboundedSequences` publish/take path, readiness across repeated
 waits, typed and serialized take-with-info argument handling, and batched take
 with publisher-GID agreement. These results establish the static C and message

@@ -94,11 +94,14 @@ jobs:
           version: "0.16.0"
 
       - name: Build rmw_zzdds and run its tests
+        # --upstream-tests (the script default, spelled out here like --test):
+        # also runs the upstream test_rmw_implementation conformance suites
+        # against rmw_zzdds_cpp. Adds ~15-25 min. --no-upstream-tests drops it.
         run: |
           python3 rmw_zzdds/ci/build_and_test.py \
             --rmw-zzdds-src rmw_zzdds --zzdds-src zzdds \
             --ros-target digest \
-            --workspace "${{ runner.temp }}/rmw-ci-ws" --jobs 4 --test
+            --workspace "${{ runner.temp }}/rmw-ci-ws" --jobs 4 --test --upstream-tests
 
       - name: Upload test results
         if: always()
@@ -177,11 +180,14 @@ jobs:
           version: "0.16.0"
 
       - name: Build rmw_zzdds and run its tests
+        # --upstream-tests (the script default, spelled out here like --test):
+        # also runs the upstream test_rmw_implementation conformance suites
+        # against rmw_zzdds_cpp. Adds ~15-25 min. --no-upstream-tests drops it.
         run: |
           python3 rmw_zzdds/ci/build_and_test.py \
             --rmw-zzdds-src rmw_zzdds --zzdds-src zzdds \
             --ros-target "${{ matrix.ros_target }}" \
-            --workspace "${{ runner.temp }}/rmw-ci-ws" --jobs 4 --test
+            --workspace "${{ runner.temp }}/rmw-ci-ws" --jobs 4 --test --upstream-tests
 
       - name: Upload test results
         if: always()
