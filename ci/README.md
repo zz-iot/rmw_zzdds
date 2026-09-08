@@ -30,7 +30,9 @@ suite. It is the single entry point for:
 5. `colcon test` the wired gtest suites and print the results.
 6. Unless `--no-upstream-tests`: `colcon test test_rmw_implementation` with
    `RMW_IMPLEMENTATION=rmw_zzdds_cpp`, filtered (ctest `-R _rmw_zzdds_cpp`) to
-   the rmw_zzdds_cpp-parameterised conformance tests, run serially.
+   the rmw_zzdds_cpp-parameterised conformance tests, run serially. A filter
+   that matches nothing (rmw_zzdds_cpp not registered during pass 3) is a hard
+   failure, not a silent pass.
 
 `--rolling-repos skip` builds and tests only the zzdds type support packages
 against the ambient ROS install — a fast "did a zzdds header break rosidl

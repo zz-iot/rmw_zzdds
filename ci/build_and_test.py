@@ -486,8 +486,27 @@ def run_upstream_rmw_tests(ws: Path, *, zzdds_prefix: Path, ros_setup: Path, job
     generated per-implementation tests set it themselves via ctest ENVIRONMENT.
     Tests run serially (no ctest `-j`): each spins up live DDS discovery and
     parallel runs cross-talk on the default domain.
+
+    A filter that selects nothing -- `test_rmw_implementation` configured
+    without `rmw_zzdds_cpp` in the ament index, so no rmw_zzdds_cpp tests were
+    generated -- must be a hard failure, not a false green. Two guards: an
+    explicit preflight count, and `--no-tests=error` on the run itself (ctest's
+    own no-match exit status is version-dependent).
     """
     setup = ws / "install" / "setup.bash"
+    build_dir = ws / "build" / "test_rmw_implementation"
+
+    preflight = (
+        f'n=$(ctest --test-dir "{build_dir}" -N -R {UPSTREAM_TEST_CTEST_FILTER} '
+        f"2>/dev/null | sed -n 's/^Total Tests: //p' || true)\n"
+        f'echo "test_rmw_implementation: ${{n:-0}} rmw_zzdds_cpp conformance test(s) selected"\n'
+        f'[ "${{n:-0}}" -gt 0 ] || {{ echo "FAIL: test_rmw_implementation generated no '
+        f'rmw_zzdds_cpp tests -- rmw_zzdds_cpp was not discovered in the ament index '
+        f'during pass 3" >&2; exit 1; }}'
+    )
+    _bash(preflight, ros_setup=ros_setup, cwd=ws, timeout=120,
+          label="preflight: rmw_zzdds_cpp conformance tests exist", extra_setup=setup)
+
     script = (
         f'export LD_LIBRARY_PATH="{zzdds_prefix / "lib"}:${{LD_LIBRARY_PATH:-}}"\n'
         f"export RMW_IMPLEMENTATION=rmw_zzdds_cpp\n"
@@ -496,7 +515,7 @@ def run_upstream_rmw_tests(ws: Path, *, zzdds_prefix: Path, ros_setup: Path, job
         f"--event-handlers console_direct+ "
         f"--return-code-on-test-failure "
         f"--parallel-workers {jobs} "
-        f"--ctest-args -R {UPSTREAM_TEST_CTEST_FILTER}"
+        f"--ctest-args --no-tests=error -R {UPSTREAM_TEST_CTEST_FILTER}"
     )
     _bash(script, ros_setup=ros_setup, cwd=ws, timeout=3600,
           label="colcon test (test_rmw_implementation)", extra_setup=setup)
