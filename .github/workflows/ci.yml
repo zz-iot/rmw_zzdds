@@ -72,8 +72,11 @@ jobs:
       - name: Check out rmw_zzdds
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.rmw_zzdds_repo || github.repository }}
-          ref: ${{ inputs.rmw_zzdds_ref || github.sha }}
+          repository: ${{ inputs.rmw_zzdds_repo }}
+          # Empty inputs.rmw_zzdds_ref -> rmw_zzdds's default branch. Do NOT
+          # fall back to github.sha here: in a called reusable workflow that
+          # is the *caller's* (zzdds) commit, which is not a ref in this repo.
+          ref: ${{ inputs.rmw_zzdds_ref }}
           path: rmw_zzdds
           persist-credentials: false
 
