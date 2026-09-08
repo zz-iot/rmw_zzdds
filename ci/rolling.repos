@@ -30,7 +30,13 @@ repositories:
   rmw_implementation:
     type: git
     url: https://github.com/ros2/rmw_implementation.git
-    version: 37bb6799192c7793fe1c1923dfae4d851b77e066
+    # rolling @ 2026-09-03. Bumped from 37bb6799 (2026-08-06) to pick up
+    # ros2/rmw_implementation#285 "Clean up QoS test entities" (70218ee,
+    # 2026-08-26): test_{service,client} check_qos now destroy the entity
+    # before node teardown, so they no longer trip rmw_zzdds's
+    # rmw_destroy_node "node still owns ..." precondition. Also includes #99
+    # (dep metadata), #278 (a regression test), #291 (a warning fix).
+    version: ff8818df2328396011543db07e8ddca99b54345a
   rosidl:
     type: git
     url: https://github.com/ros2/rosidl.git
