@@ -81,7 +81,7 @@ TEST(ZzddsCBinding, SerializedWriterReaderRoundTrip)
     dds_factory, 0U, nullptr, nullptr, DDS_STATUS_MASK_NONE);
   ASSERT_NE(nullptr, participant);
   ASSERT_EQ(0, zzdds_register_type_support(
-      participant, "rmw_zzdds_test_type", nullptr, nullptr));
+      participant, "rmw_zzdds_test_type", nullptr, nullptr, nullptr));
 
   DDS_Publisher publisher = DDS_DomainParticipant_create_publisher(
     participant, nullptr, nullptr, DDS_STATUS_MASK_NONE);
