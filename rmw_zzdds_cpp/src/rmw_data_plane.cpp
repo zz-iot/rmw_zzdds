@@ -616,7 +616,7 @@ rmw_publisher_t * rmw_create_publisher(
     return nullptr;
   }
   if (zzdds_register_type_support(context->dds.participant(), callbacks->dds_type_name, nullptr,
-      callbacks->get_field_from_cdr) != 0)
+      nullptr, callbacks->get_field_from_cdr) != 0)
   {
     RMW_SET_ERROR_MSG("failed to register zzdds type support");
     return nullptr;
@@ -1001,7 +1001,7 @@ rmw_subscription_t * rmw_create_subscription(
     return nullptr;
   }
   if (zzdds_register_type_support(context->dds.participant(), callbacks->dds_type_name, nullptr,
-      callbacks->get_field_from_cdr) != 0)
+      nullptr, callbacks->get_field_from_cdr) != 0)
   {
     RMW_SET_ERROR_MSG("failed to register zzdds type support");
     return nullptr;
