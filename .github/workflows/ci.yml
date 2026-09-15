@@ -13,8 +13,9 @@ name: CI
 #
 #   * rmw_zzdds's own pull_request / push / schedule / manual runs -> the
 #     `setup-matrix` + `build-test` matrix over (zzdds ref) x (ROS image):
-#       pr / push / manual : zzdds main, pinned ROS digest
-#       schedule           : + a non-gating leg on the moving ros:rolling tag
+#       pr / push          : zzdds main + the ZZDDS_RELEASE_REF leg below,
+#                            both gating, pinned ROS digest
+#       schedule / manual  : + a non-gating leg on the moving ros:rolling tag
 #
 # `mode` is a workflow_call input only. It is deliberately NOT also a
 # workflow_dispatch input -- workflow_call inputs cannot be `type: choice`, and
@@ -55,6 +56,14 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.zzdds_ref }}
   cancel-in-progress: true
+
+env:
+  # zz-iot/zzdds release tag: gates rmw_zzdds's own pr/schedule matrix
+  # (mode zzdds-pr, called from zzdds's CI, ignores this -- it always tests
+  # the zzdds commit under test). ci/build_and_test.py reads it via
+  # --zzdds-release's env fallback (ZZDDS_RELEASE_REF). Bump it deliberately
+  # when a new zzdds release lands.
+  ZZDDS_RELEASE_REF: v0.3.1-zig.0.16.0
 
 jobs:
   # ── zzdds regression gate (called from zzdds CI) ─────────────────────────
