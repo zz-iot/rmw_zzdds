@@ -13,9 +13,9 @@ name: CI
 #
 #   * rmw_zzdds's own pull_request / push / schedule / manual runs -> the
 #     `setup-matrix` + `build-test` matrix over (zzdds ref) x (ROS image):
-#       pr / push / manual : zzdds main + the ZZDDS_RELEASE_REF leg below,
+#       pr / push          : zzdds main + the ZZDDS_RELEASE_REF leg below,
 #                            both gating, pinned ROS digest
-#       schedule           : + a non-gating leg on the moving ros:rolling tag
+#       schedule / manual  : + a non-gating leg on the moving ros:rolling tag
 #
 # `mode` is a workflow_call input only. It is deliberately NOT also a
 # workflow_dispatch input -- workflow_call inputs cannot be `type: choice`, and
