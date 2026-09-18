@@ -2,6 +2,8 @@
 
 #include <array>
 #include <cstring>
+#include <future>
+#include <memory>
 #include <type_traits>
 
 #include "rmw_dds_common/qos.hpp"
@@ -242,13 +244,31 @@ rmw_ret_t initialize_graph_channel(rmw_context_t * context)
       return rmw_publish(publisher, message, nullptr);
     };
   impl->common.thread_is_running.store(true);
+  // The thread's own rmw_create_wait_set() call allocates through the same
+  // context_impl->allocator as every other entity on this context. Block
+  // here until that allocation has actually happened (success or failure)
+  // instead of returning immediately -- otherwise a caller that creates or
+  // destroys entities right after rmw_init() returns (including fault
+  // injection tests that track live allocation counts) races this thread's
+  // startup allocations with its own, with no synchronization between them.
+  //
+  // Promise/future construction lives inside the try block too: if it
+  // throws (e.g. std::bad_alloc), the DDS context and graph entities
+  // already created above must still be rolled back rather than leaking out
+  // of rmw_init() as an uncaught exception.
+  std::shared_ptr<std::promise<bool>> startup;
+  std::future<bool> startup_done;
   try {
-    impl->common.listener_thread = std::thread([impl]() {
+    startup = std::make_shared<std::promise<bool>>();
+    startup_done = startup->get_future();
+    impl->common.listener_thread = std::thread([impl, startup]() {
         rmw_wait_set_t * wait_set = rmw_create_wait_set(impl->graph_node->context, 2U);
         if (wait_set == nullptr) {
           impl->common.thread_is_running.store(false);
+          startup->set_value(false);
           return;
         }
+        startup->set_value(true);
         while (impl->common.thread_is_running.load()) {
           void * subscription_entries[] = {impl->common.sub->data};
           void * guard_entries[] = {impl->common.listener_thread_gc->data};
@@ -279,7 +299,16 @@ rmw_ret_t initialize_graph_channel(rmw_context_t * context)
       });
   } catch (...) {
     impl->common.thread_is_running.store(false);
-    return finalize_graph_channel(context);
+    (void)finalize_graph_channel(context);
+    return RMW_RET_ERROR;
+  }
+  if (!startup_done.get()) {
+    // The thread already stored false and returned; join it and tear down
+    // the rest of the channel, but report the startup failure itself --
+    // finalize_graph_channel() succeeding at cleanup is not the same as
+    // rmw_init() having succeeded.
+    (void)finalize_graph_channel(context);
+    return RMW_RET_ERROR;
   }
   return RMW_RET_OK;
 }
