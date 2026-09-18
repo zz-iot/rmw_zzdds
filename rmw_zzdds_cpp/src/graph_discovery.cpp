@@ -251,9 +251,16 @@ rmw_ret_t initialize_graph_channel(rmw_context_t * context)
   // destroys entities right after rmw_init() returns (including fault
   // injection tests that track live allocation counts) races this thread's
   // startup allocations with its own, with no synchronization between them.
-  auto startup = std::make_shared<std::promise<bool>>();
-  std::future<bool> startup_done = startup->get_future();
+  //
+  // Promise/future construction lives inside the try block too: if it
+  // throws (e.g. std::bad_alloc), the DDS context and graph entities
+  // already created above must still be rolled back rather than leaking out
+  // of rmw_init() as an uncaught exception.
+  std::shared_ptr<std::promise<bool>> startup;
+  std::future<bool> startup_done;
   try {
+    startup = std::make_shared<std::promise<bool>>();
+    startup_done = startup->get_future();
     impl->common.listener_thread = std::thread([impl, startup]() {
         rmw_wait_set_t * wait_set = rmw_create_wait_set(impl->graph_node->context, 2U);
         if (wait_set == nullptr) {
@@ -292,10 +299,16 @@ rmw_ret_t initialize_graph_channel(rmw_context_t * context)
       });
   } catch (...) {
     impl->common.thread_is_running.store(false);
-    return finalize_graph_channel(context);
+    (void)finalize_graph_channel(context);
+    return RMW_RET_ERROR;
   }
   if (!startup_done.get()) {
-    return finalize_graph_channel(context);
+    // The thread already stored false and returned; join it and tear down
+    // the rest of the channel, but report the startup failure itself --
+    // finalize_graph_channel() succeeding at cleanup is not the same as
+    // rmw_init() having succeeded.
+    (void)finalize_graph_channel(context);
+    return RMW_RET_ERROR;
   }
   return RMW_RET_OK;
 }
