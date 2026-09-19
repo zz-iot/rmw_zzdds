@@ -2,6 +2,7 @@
 #define RMW_ZZDDS_CPP__ENDPOINT_IMPL_HPP_
 
 #include <array>
+#include <atomic>
 #include <mutex>
 #include <unordered_set>
 
@@ -74,6 +75,16 @@ struct SubscriptionImpl final
   bool subscription_matched_pending{false};
   bool liveliness_changed_pending{false};
   bool is_service_endpoint{false};
+  // Count of matched writers that have proven (via zzdds's
+  // DataReaderListenerEx::on_reliable_writer_ready) they've actually
+  // registered this reader, not just that SEDP discovery found them.
+  // Delta-updated the same way zzdds's own PublicationMatchedStatus/
+  // SubscriptionMatchedStatus current_count fields are -- see
+  // apply_subscription_listener(). > 0 is a strictly stronger readiness
+  // signal than subscription_matched.current_count > 0 for RELIABLE
+  // matches; used by rmw_service_server_is_available() to close the race
+  // documented in zzdds's docs/design/discovery-association-race-testing.md.
+  std::atomic_int32_t reliable_writer_ready_count{0};
 };
 
 }  // namespace rmw_zzdds_cpp
