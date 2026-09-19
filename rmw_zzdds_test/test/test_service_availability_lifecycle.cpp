@@ -177,8 +177,25 @@ TEST(ServiceAvailability, readiness_survives_response_subscription_listener_rein
   ASSERT_EQ(RMW_RET_OK, rmw_service_server_is_available(fx.node, client, &available));
   EXPECT_TRUE(available);
 
-  EXPECT_EQ(RMW_RET_OK, rmw_event_fini(&event));
+  // The gap the above alone leaves (Greptile PR #9 review): confirming
+  // readiness merely *survived* reinstallation doesn't prove the newly
+  // installed listener instance still correctly tracks a *subsequent*
+  // transition -- e.g. a bug that reset the count, or that wired the new
+  // struct's on_reliable_writer_ready to a stale/no-op closure, would look
+  // identical up to this point. Drive one more real transition (the
+  // response writer departing) through the post-reinstallation listener
+  // and confirm it's still observed.
   EXPECT_EQ(RMW_RET_OK, rmw_destroy_service(fx.node, service));
+  service = nullptr;
+  available = true;
+  const auto departed_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (std::chrono::steady_clock::now() < departed_deadline && available) {
+    ASSERT_EQ(RMW_RET_OK, rmw_service_server_is_available(fx.node, client, &available));
+    if (available) {std::this_thread::sleep_for(std::chrono::milliseconds(10));}
+  }
+  EXPECT_FALSE(available);
+
+  EXPECT_EQ(RMW_RET_OK, rmw_event_fini(&event));
   EXPECT_EQ(RMW_RET_OK, rmw_destroy_client(fx.node, client));
   tear_down(fx);
 }
