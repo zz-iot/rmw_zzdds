@@ -207,6 +207,17 @@ void requested_incompatible_qos_listener(
 #undef RMW_ZZDDS_PUBLISHER_COUNT_LISTENER
 #undef RMW_ZZDDS_SUBSCRIPTION_COUNT_LISTENER
 
+// Not gated by any rmw_event_type_t/DDS_StatusMask -- zzdds dispatches this
+// zzdds::DataReaderListenerEx extension callback unconditionally (see
+// apply_subscription_listener's caller-facing doc comment). Always installed,
+// regardless of whether the application has registered any rmw event
+// callback for this subscription.
+void reliable_writer_ready_listener(DDS_InstanceHandle_t, bool is_ready, void * data)
+{
+  auto * impl = static_cast<SubscriptionImpl *>(data);
+  impl->reliable_writer_ready_count.fetch_add(
+    is_ready ? 1 : -1, std::memory_order_relaxed);
+}
 
 rmw_ret_t initialize_event(
   rmw_event_t * event, void * endpoint, DDS_StatusCondition condition, rmw_event_type_t type)
@@ -283,6 +294,36 @@ void cleanup(Impl * impl)
 
 void cleanup_endpoint_events(PublisherImpl * impl) {cleanup(impl);}
 void cleanup_endpoint_events(SubscriptionImpl * impl) {cleanup(impl);}
+
+bool apply_subscription_listener(SubscriptionImpl * impl)
+{
+  DDS_StatusMask mask = DDS_STATUS_MASK_NONE;
+  {
+    const std::lock_guard<std::mutex> lock(impl->event_mutex);
+    if (impl->event_callbacks[RMW_EVENT_SUBSCRIPTION_MATCHED] != nullptr) {
+      mask |= DDS_SUBSCRIPTION_MATCHED_STATUS;
+    }
+    if (impl->event_callbacks[RMW_EVENT_LIVELINESS_CHANGED] != nullptr) {
+      mask |= DDS_LIVELINESS_CHANGED_STATUS;
+    }
+    for (rmw_event_type_t type : {
+        RMW_EVENT_REQUESTED_DEADLINE_MISSED, RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE,
+        RMW_EVENT_MESSAGE_LOST})
+    {
+      if (impl->event_callbacks[type] != nullptr) {mask |= event_mask(type);}
+    }
+  }
+  zzdds_DataReaderListenerEx listener{};
+  listener.listener_data = impl;
+  listener.on_subscription_matched = subscription_matched_listener;
+  listener.on_liveliness_changed = liveliness_changed_listener;
+  listener.on_requested_deadline_missed = requested_deadline_listener;
+  listener.on_requested_incompatible_qos = requested_incompatible_qos_listener;
+  listener.on_sample_lost = sample_lost_listener;
+  listener.on_reliable_writer_ready = reliable_writer_ready_listener;
+  return zzdds_DataReader_set_listener_ex(
+    DDS_DataReader_as_zzdds_DataReader(impl->reader), &listener, mask) == DDS_RETCODE_OK;
+}
 }  // namespace rmw_zzdds_cpp
 
 extern "C"
@@ -544,34 +585,16 @@ rmw_ret_t rmw_event_set_callback(
            RMW_RET_OK : RMW_RET_ERROR;
   }
   auto * impl = static_cast<SubscriptionImpl *>(event->data);
-  DDS_StatusMask mask = DDS_STATUS_MASK_NONE;
   {
     const std::lock_guard<std::mutex> lock(impl->event_mutex);
     impl->event_callbacks[event->event_type] = callback;
     impl->event_user_data[event->event_type] = user_data;
-    if (impl->event_callbacks[RMW_EVENT_SUBSCRIPTION_MATCHED] != nullptr) {
-      mask |= DDS_SUBSCRIPTION_MATCHED_STATUS;
-    }
-    if (impl->event_callbacks[RMW_EVENT_LIVELINESS_CHANGED] != nullptr) {
-      mask |= DDS_LIVELINESS_CHANGED_STATUS;
-    }
-    for (rmw_event_type_t type : {
-        RMW_EVENT_REQUESTED_DEADLINE_MISSED, RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE,
-        RMW_EVENT_MESSAGE_LOST})
-    {
-      if (impl->event_callbacks[type] != nullptr) {mask |= event_mask(type);}
-    }
   }
-  DDS_DataReaderListener listener{};
-  listener.listener_data = impl;
-  listener.on_subscription_matched = subscription_matched_listener;
-  listener.on_liveliness_changed = liveliness_changed_listener;
-  listener.on_requested_deadline_missed = requested_deadline_listener;
-  listener.on_requested_incompatible_qos = requested_incompatible_qos_listener;
-  listener.on_sample_lost = sample_lost_listener;
-  return DDS_DataReader_set_listener(
-    impl->reader, mask == DDS_STATUS_MASK_NONE ? nullptr : &listener, mask) == DDS_RETCODE_OK ?
-         RMW_RET_OK : RMW_RET_ERROR;
+  // Not a plain DDS_DataReader_set_listener call: that would replace the
+  // whole listener and silently drop the always-on
+  // on_reliable_writer_ready readiness tracker apply_subscription_listener
+  // installs at subscription-creation time. See its doc comment.
+  return rmw_zzdds_cpp::apply_subscription_listener(impl) ? RMW_RET_OK : RMW_RET_ERROR;
 }
 
 }

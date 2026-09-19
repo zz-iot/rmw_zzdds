@@ -459,14 +459,26 @@ rmw_ret_t rmw_service_server_is_available(
   }
   auto * impl = static_cast<ClientImpl *>(client->data);
   size_t request_readers = 0U;
-  size_t response_writers = 0U;
   rmw_ret_t result = rmw_publisher_count_matched_subscriptions(
     impl->request_publisher, &request_readers);
   if (result != RMW_RET_OK) {return result;}
-  result = rmw_subscription_count_matched_publishers(
-    impl->response_subscription, &response_writers);
-  if (result != RMW_RET_OK) {return result;}
-  *is_available = request_readers > 0U && response_writers > 0U;
+  // Deliberately not rmw_subscription_count_matched_publishers() here: that
+  // only proves this reader's own SEDP discovery found the service's
+  // response writer, not that the *writer* has registered this reader in
+  // its own send list yet -- a separate, asymmetric SEDP event with no
+  // ordering guarantee relative to the first. Racing ahead on that weaker
+  // signal is exactly what let a service's rmw_send_response() silently
+  // exclude a still-VOLATILE-unmatched client, hanging test_service_round_trip.
+  // on_reliable_writer_ready (via apply_subscription_listener, installed at
+  // subscription creation) tracks proof the remote writer has actually
+  // registered this reader -- a targeted HEARTBEAT naming it (RELIABLE), or
+  // immediate at match (BEST_EFFORT, no such handshake exists) -- which is a
+  // strictly stronger condition than mere SEDP matched-count and implies it.
+  // See zzdds's docs/design/discovery-association-race-testing.md.
+  auto * response_sub_impl = static_cast<SubscriptionImpl *>(impl->response_subscription->data);
+  const bool response_writer_ready =
+    response_sub_impl->reliable_writer_ready_count.load(std::memory_order_relaxed) > 0;
+  *is_available = request_readers > 0U && response_writer_ready;
   return RMW_RET_OK;
 }
 

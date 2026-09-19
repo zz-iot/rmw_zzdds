@@ -1107,6 +1107,23 @@ rmw_subscription_t * rmw_create_subscription(
     RMW_SET_ERROR_MSG("failed to obtain the zzdds reader RTPS GUID");
     return nullptr;
   }
+  // Starts this reader's on_reliable_writer_ready readiness tracking (see
+  // apply_subscription_listener's doc comment) from creation, not just from
+  // whenever an application first calls rmw_event_set_callback.
+  if (!rmw_zzdds_cpp::apply_subscription_listener(impl)) {
+    allocator.deallocate(name_copy, allocator.state);
+    rmw_zzdds_cpp::deallocate_object(allocator, result);
+    rmw_zzdds_cpp::deallocate_object(allocator, impl);
+    (void)DDS_DataReader_delete_readcondition(reader, read_condition);
+    (void)DDS_Subscriber_delete_datareader(context->dds.subscriber(), reader);
+    if (filtered_topic != nullptr) {
+      (void)DDS_DomainParticipant_delete_contentfilteredtopic(
+        context->dds.participant(), filtered_topic);
+    }
+    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    RMW_SET_ERROR_MSG("failed to install the subscription's DDS listener");
+    return nullptr;
+  }
   try {
     context->subscriptions.insert(result);
     if (!context->suppress_graph_updates) {
