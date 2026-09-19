@@ -51,6 +51,20 @@ if(BUILD_TESTING)
         "LD_LIBRARY_PATH=path_list_prepend:${_zzdds_library_dir}")
   endif()
 
+  ament_add_gtest(
+    test_service_availability_lifecycle test/test_service_availability_lifecycle.cpp)
+  if(TARGET test_service_availability_lifecycle)
+    target_compile_features(test_service_availability_lifecycle PRIVATE cxx_std_17)
+    target_link_libraries(test_service_availability_lifecycle
+      ${cpp_typesupport_target}
+      ${zzdds_typesupport_target}
+      rmw_zzdds_cpp::rmw_zzdds_cpp
+      ZZDDS::zzdds)
+    set_tests_properties(test_service_availability_lifecycle PROPERTIES
+      ENVIRONMENT_MODIFICATION
+        "LD_LIBRARY_PATH=path_list_prepend:${_zzdds_library_dir}")
+  endif()
+
   ament_add_gtest(test_incompatible_qos_event test/test_incompatible_qos_event.cpp)
   if(TARGET test_incompatible_qos_event)
     target_compile_features(test_incompatible_qos_event PRIVATE cxx_std_17)
