@@ -535,9 +535,13 @@ rmw_ret_t replace_subscription_filter(
     }
     return RMW_RET_ERROR;
   }
-  DDS_DataReader new_reader = DDS_Subscriber_create_datareader(
-    subscription->context->dds.subscriber(), description, &dds_qos,
-    nullptr, DDS_STATUS_MASK_NONE);
+  // Same listener as the reader it replaces, installed at creation, so the
+  // subscription's rmw event callbacks keep working after a filter change.
+  // reliable_writer_ready_count is not reset, so it can over-count after a
+  // swap; it is only read for a service client's response subscription,
+  // which never has a content filter.
+  DDS_DataReader new_reader =
+    rmw_zzdds_cpp::create_subscription_reader(subscription, description, &dds_qos);
   DDS_DataReaderQos_free(&dds_qos);
   if (new_reader == nullptr) {
     if (new_filtered_topic != nullptr) {
@@ -559,6 +563,7 @@ rmw_ret_t replace_subscription_filter(
     return RMW_RET_ERROR;
   }
 
+  (void)DDS_DataReader_set_listener(subscription->reader, nullptr, DDS_STATUS_MASK_NONE);
   bool removed = DDS_DataReader_delete_readcondition(
     subscription->reader, subscription->read_condition) == DDS_RETCODE_OK;
   removed = DDS_Subscriber_delete_datareader(
@@ -1040,11 +1045,28 @@ rmw_subscription_t * rmw_create_subscription(
     }
     topic_description = DDS_ContentFilteredTopic_as_DDS_TopicDescription(filtered_topic);
   }
-  DDS_DataReader reader = DDS_Subscriber_create_datareader(
-    context->dds.subscriber(), topic_description, &dds_qos,
-    nullptr, DDS_STATUS_MASK_NONE);
+  // The impl is the reader listener's data, so it exists before the reader:
+  // the reader is created with its listener installed (see
+  // create_subscription_reader), and impl->reader is filled in afterwards.
+  const auto allocator = context->allocator;
+  auto * impl = rmw_zzdds_cpp::allocate_object<SubscriptionImpl>(
+    allocator, context, node, topic, filtered_topic, nullptr, nullptr, callbacks, actual_qos,
+    type_hash, options->ignore_local_publications);
+  if (impl == nullptr) {
+    DDS_DataReaderQos_free(&dds_qos);
+    if (filtered_topic != nullptr) {
+      (void)DDS_DomainParticipant_delete_contentfilteredtopic(
+        context->dds.participant(), filtered_topic);
+    }
+    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    RMW_SET_ERROR_MSG("failed to allocate subscription resources");
+    return nullptr;
+  }
+  DDS_DataReader reader =
+    rmw_zzdds_cpp::create_subscription_reader(impl, topic_description, &dds_qos);
   DDS_DataReaderQos_free(&dds_qos);
   if (reader == nullptr) {
+    rmw_zzdds_cpp::deallocate_object(allocator, impl);
     if (filtered_topic != nullptr) {
       (void)DDS_DomainParticipant_delete_contentfilteredtopic(
         context->dds.participant(), filtered_topic);
@@ -1053,10 +1075,12 @@ rmw_subscription_t * rmw_create_subscription(
     RMW_SET_ERROR_MSG("failed to create the DDS data reader");
     return nullptr;
   }
+  impl->reader = reader;
   DDS_ReadCondition read_condition = DDS_DataReader_create_readcondition(
     reader, DDS_NOT_READ_SAMPLE_STATE, DDS_ANY_VIEW_STATE, DDS_ANY_INSTANCE_STATE);
   if (read_condition == nullptr) {
     (void)DDS_Subscriber_delete_datareader(context->dds.subscriber(), reader);
+    rmw_zzdds_cpp::deallocate_object(allocator, impl);
     if (filtered_topic != nullptr) {
       (void)DDS_DomainParticipant_delete_contentfilteredtopic(
         context->dds.participant(), filtered_topic);
@@ -1065,18 +1089,16 @@ rmw_subscription_t * rmw_create_subscription(
     RMW_SET_ERROR_MSG("failed to create the DDS subscription read condition");
     return nullptr;
   }
-  const auto allocator = context->allocator;
-  auto * impl = rmw_zzdds_cpp::allocate_object<SubscriptionImpl>(
-    allocator, context, node, topic, filtered_topic, reader, read_condition, callbacks, actual_qos,
-    type_hash, options->ignore_local_publications);
+  impl->read_condition = read_condition;
   auto * result = rmw_zzdds_cpp::allocate_object<rmw_subscription_t>(allocator);
   char * name_copy = rmw_zzdds_cpp::duplicate_string(allocator, topic_name);
-  if (impl == nullptr || result == nullptr || name_copy == nullptr) {
+  if (result == nullptr || name_copy == nullptr) {
     if (name_copy != nullptr) {allocator.deallocate(name_copy, allocator.state);}
     rmw_zzdds_cpp::deallocate_object(allocator, result);
-    rmw_zzdds_cpp::deallocate_object(allocator, impl);
+    // The reader's listener holds impl: delete the reader first.
     (void)DDS_DataReader_delete_readcondition(reader, read_condition);
     (void)DDS_Subscriber_delete_datareader(context->dds.subscriber(), reader);
+    rmw_zzdds_cpp::deallocate_object(allocator, impl);
     if (filtered_topic != nullptr) {
       (void)DDS_DomainParticipant_delete_contentfilteredtopic(
         context->dds.participant(), filtered_topic);
@@ -1096,32 +1118,16 @@ rmw_subscription_t * rmw_create_subscription(
   if (!guid_from_reader(reader, &subscription_gid)) {
     allocator.deallocate(name_copy, allocator.state);
     rmw_zzdds_cpp::deallocate_object(allocator, result);
-    rmw_zzdds_cpp::deallocate_object(allocator, impl);
+    // The reader's listener holds impl: delete the reader first.
     (void)DDS_DataReader_delete_readcondition(reader, read_condition);
     (void)DDS_Subscriber_delete_datareader(context->dds.subscriber(), reader);
+    rmw_zzdds_cpp::deallocate_object(allocator, impl);
     if (filtered_topic != nullptr) {
       (void)DDS_DomainParticipant_delete_contentfilteredtopic(
         context->dds.participant(), filtered_topic);
     }
     (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
     RMW_SET_ERROR_MSG("failed to obtain the zzdds reader RTPS GUID");
-    return nullptr;
-  }
-  // Starts this reader's on_reliable_writer_ready readiness tracking (see
-  // apply_subscription_listener's doc comment) from creation, not just from
-  // whenever an application first calls rmw_event_set_callback.
-  if (!rmw_zzdds_cpp::apply_subscription_listener(impl)) {
-    allocator.deallocate(name_copy, allocator.state);
-    rmw_zzdds_cpp::deallocate_object(allocator, result);
-    rmw_zzdds_cpp::deallocate_object(allocator, impl);
-    (void)DDS_DataReader_delete_readcondition(reader, read_condition);
-    (void)DDS_Subscriber_delete_datareader(context->dds.subscriber(), reader);
-    if (filtered_topic != nullptr) {
-      (void)DDS_DomainParticipant_delete_contentfilteredtopic(
-        context->dds.participant(), filtered_topic);
-    }
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
-    RMW_SET_ERROR_MSG("failed to install the subscription's DDS listener");
     return nullptr;
   }
   try {
@@ -1143,9 +1149,10 @@ rmw_subscription_t * rmw_create_subscription(
     context->subscriptions.erase(result);
     allocator.deallocate(name_copy, allocator.state);
     rmw_zzdds_cpp::deallocate_object(allocator, result);
-    rmw_zzdds_cpp::deallocate_object(allocator, impl);
+    // The reader's listener holds impl: delete the reader first.
     (void)DDS_DataReader_delete_readcondition(reader, read_condition);
     (void)DDS_Subscriber_delete_datareader(context->dds.subscriber(), reader);
+    rmw_zzdds_cpp::deallocate_object(allocator, impl);
     if (filtered_topic != nullptr) {
       (void)DDS_DomainParticipant_delete_contentfilteredtopic(
         context->dds.participant(), filtered_topic);

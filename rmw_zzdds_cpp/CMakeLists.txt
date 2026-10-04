@@ -9,10 +9,13 @@ find_package(rosidl_typesupport_zzdds_cpp REQUIRED)
 find_package(rosidl_typesupport_zzdds_c REQUIRED)
 find_package(ZZDDS CONFIG REQUIRED)
 
-# rmw_service_server_is_available's race fix needs zzdds's on_reliable_writer_
-# ready listener extension, added in zzdds v0.3.3-zig.0.16.0 (see README.md's
-# Development baseline). ZZDDS_VERSION (from zzdds's own build.zig.zon) is not
-# a CMake-comparable dotted version -- it looks like "0.3.3-zig.0.16.0" -- so
+# rmw_service_server_is_available's readiness tracking needs zzdds's
+# on_reliable_writer_ready listener extension (zzdds v0.3.3-zig.0.16.0) installed
+# at reader creation via zzdds_Subscriber_create_datareader_ex, added in zzdds
+# v0.3.4-zig.0.16.0; v0.3.5-zig.0.16.0 fixes matches and publisher GUIDs that
+# service availability and take depend on (see README.md's Development
+# baseline). ZZDDS_VERSION (from zzdds's own build.zig.zon) is not a
+# CMake-comparable dotted version -- it looks like "0.3.5-zig.0.16.0" -- so
 # probe for the actual C-ABI entry point the feature added instead of trying
 # to VERSION_LESS-compare that string. Failing here, at configure time, beats
 # an older zzdds producing a confusing compile error deep inside
@@ -21,16 +24,15 @@ include(CheckSymbolExists)
 get_target_property(_zzdds_include_dir ZZDDS::zzdds INTERFACE_INCLUDE_DIRECTORIES)
 set(CMAKE_REQUIRED_INCLUDES "${_zzdds_include_dir}")
 set(CMAKE_REQUIRED_LIBRARIES ZZDDS::zzdds)
-check_symbol_exists(zzdds_DataReader_set_listener_ex "zzdds.h" ZZDDS_HAS_SET_LISTENER_EX)
+check_symbol_exists(zzdds_Subscriber_create_datareader_ex "zzdds.h" ZZDDS_HAS_CREATE_DATAREADER_EX)
 unset(CMAKE_REQUIRED_INCLUDES)
 unset(CMAKE_REQUIRED_LIBRARIES)
 unset(_zzdds_include_dir)
-if(NOT ZZDDS_HAS_SET_LISTENER_EX)
+if(NOT ZZDDS_HAS_CREATE_DATAREADER_EX)
   message(FATAL_ERROR
-    "rmw_zzdds_cpp requires zzdds >= v0.3.3-zig.0.16.0 (found ZZDDS_VERSION="
-    "${ZZDDS_VERSION}, missing zzdds_DataReader_set_listener_ex / "
-    "DataReaderListenerEx::on_reliable_writer_ready). See README.md's "
-    "Development baseline for the supported zzdds release.")
+    "rmw_zzdds_cpp requires zzdds >= v0.3.5-zig.0.16.0 (found ZZDDS_VERSION="
+    "${ZZDDS_VERSION}, missing zzdds_Subscriber_create_datareader_ex). See "
+    "README.md's Development baseline for the supported zzdds release.")
 endif()
 
 get_target_property(_zzdds_library ZZDDS::zzdds IMPORTED_LOCATION)

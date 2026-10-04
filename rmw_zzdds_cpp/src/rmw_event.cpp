@@ -295,7 +295,11 @@ void cleanup(Impl * impl)
 void cleanup_endpoint_events(PublisherImpl * impl) {cleanup(impl);}
 void cleanup_endpoint_events(SubscriptionImpl * impl) {cleanup(impl);}
 
-bool apply_subscription_listener(SubscriptionImpl * impl)
+namespace
+{
+// Fills `listener` with impl's full subscription listener and returns the
+// status mask for the rmw event callbacks currently registered on impl.
+DDS_StatusMask subscription_listener(SubscriptionImpl * impl, zzdds_DataReaderListenerEx & listener)
 {
   DDS_StatusMask mask = DDS_STATUS_MASK_NONE;
   {
@@ -313,7 +317,7 @@ bool apply_subscription_listener(SubscriptionImpl * impl)
       if (impl->event_callbacks[type] != nullptr) {mask |= event_mask(type);}
     }
   }
-  zzdds_DataReaderListenerEx listener{};
+  listener = zzdds_DataReaderListenerEx{};
   listener.listener_data = impl;
   listener.on_subscription_matched = subscription_matched_listener;
   listener.on_liveliness_changed = liveliness_changed_listener;
@@ -321,6 +325,24 @@ bool apply_subscription_listener(SubscriptionImpl * impl)
   listener.on_requested_incompatible_qos = requested_incompatible_qos_listener;
   listener.on_sample_lost = sample_lost_listener;
   listener.on_reliable_writer_ready = reliable_writer_ready_listener;
+  return mask;
+}
+}  // namespace
+
+DDS_DataReader create_subscription_reader(
+  SubscriptionImpl * impl, DDS_TopicDescription topic_description, const DDS_DataReaderQos * qos)
+{
+  zzdds_DataReaderListenerEx listener;
+  const DDS_StatusMask mask = subscription_listener(impl, listener);
+  return zzdds_Subscriber_create_datareader_ex(
+    DDS_Subscriber_as_zzdds_Subscriber(impl->context->dds.subscriber()), topic_description, qos,
+    &listener, mask);
+}
+
+bool apply_subscription_listener(SubscriptionImpl * impl)
+{
+  zzdds_DataReaderListenerEx listener;
+  const DDS_StatusMask mask = subscription_listener(impl, listener);
   return zzdds_DataReader_set_listener_ex(
     DDS_DataReader_as_zzdds_DataReader(impl->reader), &listener, mask) == DDS_RETCODE_OK;
 }
