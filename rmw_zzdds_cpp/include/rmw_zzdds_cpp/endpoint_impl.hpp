@@ -68,6 +68,12 @@ struct SubscriptionImpl final
   std::array<rmw_event_callback_t, RMW_EVENT_TYPE_MAX> event_callbacks{};
   std::array<const void *, RMW_EVENT_TYPE_MAX> event_user_data{};
   DDS_SubscriptionMatchedStatus subscription_matched{};
+  // Added to the reader's own SubscriptionMatchedStatus.total_count to give
+  // subscription_matched.total_count. Nonzero once a content-filter change
+  // has replaced the reader (see replace_subscription_filter), so the
+  // subscription's matched status continues across the replacement. Guarded
+  // by event_mutex.
+  int32_t matched_total_offset{0};
   DDS_LivelinessChangedStatus liveliness_changed{};
   DDS_RequestedDeadlineMissedStatus requested_deadline_missed{};
   DDS_RequestedIncompatibleQosStatus requested_incompatible_qos{};

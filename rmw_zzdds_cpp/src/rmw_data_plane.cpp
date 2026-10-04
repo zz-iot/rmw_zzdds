@@ -535,15 +535,44 @@ rmw_ret_t replace_subscription_filter(
     }
     return RMW_RET_ERROR;
   }
+  // The old reader stops reporting before its replacement exists, and the
+  // subscription's matched status carries over: the publishers the old reader
+  // currently matches will be matched again by the new one, so the total
+  // offset keeps them from counting twice (a publisher that disappears during
+  // the swap leaves the total one lower). Readiness is counted afresh from the
+  // new reader. Both are restored, with the old listener, if the swap fails.
+  (void)DDS_DataReader_set_listener(subscription->reader, nullptr, DDS_STATUS_MASK_NONE);
+  int32_t saved_total_offset = 0;
+  int32_t saved_ready_count = 0;
+  {
+    const std::lock_guard<std::mutex> lock(subscription->event_mutex);
+    saved_total_offset = subscription->matched_total_offset;
+    saved_ready_count = subscription->reliable_writer_ready_count.load(std::memory_order_relaxed);
+    DDS_SubscriptionMatchedStatus old_status{};
+    if (DDS_DataReader_get_subscription_matched_status(subscription->reader, &old_status) ==
+      DDS_RETCODE_OK)
+    {
+      rmw_zzdds_cpp::accumulate_subscription_matched(subscription, old_status);
+    }
+    subscription->matched_total_offset = subscription->subscription_matched.total_count -
+      subscription->subscription_matched.current_count;
+    subscription->reliable_writer_ready_count.store(0, std::memory_order_relaxed);
+  }
+  const auto restore_old_reader = [subscription, saved_total_offset, saved_ready_count]() {
+    {
+      const std::lock_guard<std::mutex> lock(subscription->event_mutex);
+      subscription->matched_total_offset = saved_total_offset;
+      subscription->reliable_writer_ready_count.store(saved_ready_count, std::memory_order_relaxed);
+    }
+    (void)rmw_zzdds_cpp::apply_subscription_listener(subscription);
+  };
   // Same listener as the reader it replaces, installed at creation, so the
   // subscription's rmw event callbacks keep working after a filter change.
-  // reliable_writer_ready_count is not reset, so it can over-count after a
-  // swap; it is only read for a service client's response subscription,
-  // which never has a content filter.
   DDS_DataReader new_reader =
     rmw_zzdds_cpp::create_subscription_reader(subscription, description, &dds_qos);
   DDS_DataReaderQos_free(&dds_qos);
   if (new_reader == nullptr) {
+    restore_old_reader();
     if (new_filtered_topic != nullptr) {
       (void)DDS_DomainParticipant_delete_contentfilteredtopic(
         subscription->context->dds.participant(), new_filtered_topic);
@@ -555,6 +584,7 @@ rmw_ret_t replace_subscription_filter(
     new_reader, DDS_NOT_READ_SAMPLE_STATE, DDS_ANY_VIEW_STATE, DDS_ANY_INSTANCE_STATE);
   if (new_condition == nullptr) {
     (void)DDS_Subscriber_delete_datareader(subscription->context->dds.subscriber(), new_reader);
+    restore_old_reader();
     if (new_filtered_topic != nullptr) {
       (void)DDS_DomainParticipant_delete_contentfilteredtopic(
         subscription->context->dds.participant(), new_filtered_topic);
@@ -563,7 +593,6 @@ rmw_ret_t replace_subscription_filter(
     return RMW_RET_ERROR;
   }
 
-  (void)DDS_DataReader_set_listener(subscription->reader, nullptr, DDS_STATUS_MASK_NONE);
   bool removed = DDS_DataReader_delete_readcondition(
     subscription->reader, subscription->read_condition) == DDS_RETCODE_OK;
   removed = DDS_Subscriber_delete_datareader(

@@ -1,3 +1,5 @@
+#include <algorithm>
+
 #include "rmw/error_handling.h"
 #include "rmw/events_statuses/matched.h"
 #include "rmw/events_statuses/liveliness_changed.h"
@@ -87,10 +89,7 @@ void subscription_matched_listener(
   const void * user_data = nullptr;
   {
     const std::lock_guard<std::mutex> lock(impl->event_mutex);
-    impl->subscription_matched.total_count = status->total_count;
-    impl->subscription_matched.total_count_change += status->total_count_change;
-    impl->subscription_matched.current_count = status->current_count;
-    impl->subscription_matched.current_count_change += status->current_count_change;
+    rmw_zzdds_cpp::accumulate_subscription_matched(impl, *status);
     impl->subscription_matched_pending = true;
     callback = impl->event_callbacks[RMW_EVENT_SUBSCRIPTION_MATCHED];
     user_data = impl->event_user_data[RMW_EVENT_SUBSCRIPTION_MATCHED];
@@ -329,6 +328,25 @@ DDS_StatusMask subscription_listener(SubscriptionImpl * impl, zzdds_DataReaderLi
 }
 }  // namespace
 
+void accumulate_subscription_matched(
+  SubscriptionImpl * impl, const DDS_SubscriptionMatchedStatus & reader_status)
+{
+  // Changes come from the absolute counts rather than the reader's own
+  // *_change fields, so a replacement reader re-matching publishers the
+  // subscription already counts (see matched_total_offset) adds nothing.
+  // The total never decreases: while a replacement reader is re-matching,
+  // offset + its own total is still below the subscription's total.
+  // current_count follows the reader as is, so it can dip during a swap.
+  auto & matched = impl->subscription_matched;
+  const int32_t total =
+    std::max(matched.total_count, impl->matched_total_offset + reader_status.total_count);
+  matched.total_count_change += total - matched.total_count;
+  matched.current_count_change += reader_status.current_count - matched.current_count;
+  matched.total_count = total;
+  matched.current_count = reader_status.current_count;
+  matched.last_publication_handle = reader_status.last_publication_handle;
+}
+
 DDS_DataReader create_subscription_reader(
   SubscriptionImpl * impl, DDS_TopicDescription topic_description, const DDS_DataReaderQos * qos)
 {
@@ -418,10 +436,19 @@ rmw_ret_t rmw_take_event(const rmw_event_t * event, void * event_info, bool * ta
         impl->subscription_matched.current_count_change = 0;
         impl->subscription_matched_pending = false;
         (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event->event_type], false);
-      } else if (DDS_DataReader_get_subscription_matched_status(
-          impl->reader, &status) != DDS_RETCODE_OK)
-      {
-        return RMW_RET_ERROR;
+      } else {
+        // Through the same accumulation as the listener, so the status
+        // continues across a content-filter reader replacement here too.
+        DDS_SubscriptionMatchedStatus reader_status{};
+        if (DDS_DataReader_get_subscription_matched_status(impl->reader, &reader_status) !=
+          DDS_RETCODE_OK)
+        {
+          return RMW_RET_ERROR;
+        }
+        rmw_zzdds_cpp::accumulate_subscription_matched(impl, reader_status);
+        status = impl->subscription_matched;
+        impl->subscription_matched.total_count_change = 0;
+        impl->subscription_matched.current_count_change = 0;
       }
     }
     output->total_count = static_cast<size_t>(status.total_count);
