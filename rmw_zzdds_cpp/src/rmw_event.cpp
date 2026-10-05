@@ -345,6 +345,33 @@ void accumulate_subscription_matched(
   DDS_InstanceHandleSeq_free(&publications);
 }
 
+void refresh_subscription_matched(SubscriptionImpl * impl, DDS_DataReader reader)
+{
+  DDS_SubscriptionMatchedStatus reader_status{};
+  if (DDS_DataReader_get_subscription_matched_status(reader, &reader_status) != DDS_RETCODE_OK) {
+    return;
+  }
+  rmw_event_callback_t callback = nullptr;
+  const void * user_data = nullptr;
+  {
+    const std::lock_guard<std::mutex> lock(impl->event_mutex);
+    const DDS_SubscriptionMatchedStatus before = impl->subscription_matched.status;
+    accumulate_subscription_matched(impl, reader, reader_status);
+    const DDS_SubscriptionMatchedStatus & after = impl->subscription_matched.status;
+    if (after.total_count_change == before.total_count_change &&
+      after.current_count_change == before.current_count_change)
+    {
+      return;
+    }
+    impl->subscription_matched_pending = true;
+    callback = impl->event_callbacks[RMW_EVENT_SUBSCRIPTION_MATCHED];
+    user_data = impl->event_user_data[RMW_EVENT_SUBSCRIPTION_MATCHED];
+    (void)DDS_GuardCondition_set_trigger_value(
+      impl->event_guards[RMW_EVENT_SUBSCRIPTION_MATCHED], true);
+  }
+  if (callback != nullptr) {callback(user_data, 1U);}
+}
+
 DDS_DataReader create_subscription_reader(
   SubscriptionImpl * impl, DDS_TopicDescription topic_description, const DDS_DataReaderQos * qos)
 {

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <utility>
 #include <vector>
 
 #include "rmw_zzdds_cpp/matched_status.hpp"
@@ -34,9 +35,10 @@ void fold(SubscriptionMatchedContinuity & c, const Reader & r)
   c.fold(r.status(), r.matched.data(), r.matched.size());
 }
 
-void begin_replacement(SubscriptionMatchedContinuity & c, const Reader & old_reader)
+SubscriptionMatchedContinuity::Checkpoint begin_replacement(
+  SubscriptionMatchedContinuity & c, const Reader & old_reader)
 {
-  c.begin_replacement(old_reader.matched.data(), old_reader.matched.size());
+  return c.begin_replacement(old_reader.matched.data(), old_reader.matched.size());
 }
 
 TEST(SubscriptionMatchedContinuity, counts_each_match_of_a_single_reader)
@@ -127,5 +129,58 @@ TEST(SubscriptionMatchedContinuity, total_never_decreases_when_the_list_runs_ahe
   const auto s = c.take();
   EXPECT_EQ(1, s.total_count);
   EXPECT_EQ(0, s.total_count_change);
+}
+
+// A replacement that fails is cancelled. Changes taken while it was attempted
+// stay taken: folding the old reader back in reports only what is different
+// from what was last reported.
+TEST(SubscriptionMatchedContinuity, cancelled_replacement_does_not_replay_taken_changes)
+{
+  SubscriptionMatchedContinuity c;
+  Reader old_reader;
+  old_reader.match(kA);
+  old_reader.match(kB);
+  fold(c, old_reader);  // not yet taken when the replacement starts
+
+  auto checkpoint = begin_replacement(c, old_reader);
+  Reader replacement;
+  replacement.match(kA);
+  fold(c, replacement);  // current dips to 1 while the replacement re-matches
+  const auto during = c.take();
+  EXPECT_EQ(2, during.total_count_change);
+  EXPECT_EQ(1, during.current_count);
+  EXPECT_EQ(1, during.current_count_change);
+
+  c.cancel_replacement(std::move(checkpoint));
+  fold(c, old_reader);
+  const auto after = c.take();
+  EXPECT_EQ(2, after.total_count);
+  EXPECT_EQ(0, after.total_count_change);
+  EXPECT_EQ(2, after.current_count);
+  EXPECT_EQ(1, after.current_count_change);  // undoes the taken dip, nothing more
+  const auto again = c.take();
+  EXPECT_EQ(0, again.total_count_change);
+  EXPECT_EQ(0, again.current_count_change);
+}
+
+// The old reader may match a new publication while the replacement is
+// attempted; after cancelling, it counts once.
+TEST(SubscriptionMatchedContinuity, cancelled_replacement_counts_a_match_made_meanwhile)
+{
+  SubscriptionMatchedContinuity c;
+  Reader old_reader;
+  old_reader.match(kA);
+  fold(c, old_reader);
+  (void)c.take();
+
+  auto checkpoint = begin_replacement(c, old_reader);
+  old_reader.match(kD);
+  c.cancel_replacement(std::move(checkpoint));
+  fold(c, old_reader);
+  const auto s = c.take();
+  EXPECT_EQ(2, s.total_count);
+  EXPECT_EQ(1, s.total_count_change);
+  EXPECT_EQ(2, s.current_count);
+  EXPECT_EQ(1, s.current_count_change);
 }
 }  // namespace

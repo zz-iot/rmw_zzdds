@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <unordered_set>
+#include <utility>
 
 #include "zzdds_c.h"
 
@@ -27,14 +28,34 @@ struct SubscriptionMatchedContinuity
   // not matched yet.
   std::unordered_set<DDS_InstanceHandle_t> inherited;
 
+  // The bookkeeping that counts the current reader's matches, saved by
+  // begin_replacement so a failed replacement can return to it.
+  struct Checkpoint
+  {
+    int32_t total_offset{0};
+    std::unordered_set<DDS_InstanceHandle_t> inherited;
+  };
+
   // Starts counting for a replacement reader. `publications` are the
   // publications the reader being replaced currently matches; call after
-  // folding in that reader's final status.
-  void begin_replacement(const DDS_InstanceHandle_t * publications, size_t count)
+  // folding in that reader's final status. Returns what cancel_replacement
+  // needs to go back to counting for the reader being replaced.
+  Checkpoint begin_replacement(const DDS_InstanceHandle_t * publications, size_t count)
   {
+    Checkpoint previous{total_offset, std::move(inherited)};
     inherited.clear();
     inherited.insert(publications, publications + count);
     total_offset = status.total_count;
+    return previous;
+  }
+
+  // Goes back to counting for the reader begin_replacement replaced. Only the
+  // bookkeeping is restored, not `status`: changes taken meanwhile stay taken.
+  // Then fold in that reader's current status as usual.
+  void cancel_replacement(Checkpoint && previous)
+  {
+    total_offset = previous.total_offset;
+    inherited = std::move(previous.inherited);
   }
 
   // Folds in the current reader's status. `publications` are the publications

@@ -35,6 +35,11 @@ DDS_DataReader create_subscription_reader(
 void accumulate_subscription_matched(
   SubscriptionImpl * impl, DDS_DataReader reader,
   const DDS_SubscriptionMatchedStatus & reader_status);
+// Folds `reader`'s current matched status into impl->subscription_matched
+// and, if that changed the status, signals the subscription-matched event
+// as the listener would. For when the reader's own listener will not report
+// the change (it was detached meanwhile).
+void refresh_subscription_matched(SubscriptionImpl * impl, DDS_DataReader reader);
 // Reinstalls impl->reader's full listener. Call any time impl->event_callbacks
 // changes -- the base DDS_DataReaderListener path a plain
 // DDS_DataReader_set_listener call would use replaces the whole listener,
