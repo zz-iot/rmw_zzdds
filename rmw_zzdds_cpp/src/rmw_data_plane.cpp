@@ -5,6 +5,8 @@
 #include <limits>
 #include <new>
 #include <string>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "rcutils/types/uint8_array.h"
@@ -536,36 +538,42 @@ rmw_ret_t replace_subscription_filter(
     return RMW_RET_ERROR;
   }
   // The old reader stops reporting before its replacement exists, and the
-  // subscription's matched status carries over: the publishers the old reader
-  // currently matches will be matched again by the new one, so the total
-  // offset keeps them from counting twice (a publisher that disappears during
-  // the swap leaves the total one lower). Readiness is counted afresh from the
-  // new reader. Both are restored, with the old listener, if the swap fails.
+  // subscription's matched status carries over (see
+  // SubscriptionMatchedContinuity): the publications the old reader matches
+  // are matched again by the new one without counting as new matches.
+  // Readiness is counted afresh from the new reader. All of it, and the old
+  // listener, is restored if the swap fails.
   (void)DDS_DataReader_set_listener(subscription->reader, nullptr, DDS_STATUS_MASK_NONE);
-  int32_t saved_total_offset = 0;
+  rmw_zzdds_cpp::SubscriptionMatchedContinuity saved_matched;
   int32_t saved_ready_count = 0;
   {
     const std::lock_guard<std::mutex> lock(subscription->event_mutex);
-    saved_total_offset = subscription->matched_total_offset;
-    saved_ready_count = subscription->reliable_writer_ready_count.load(std::memory_order_relaxed);
     DDS_SubscriptionMatchedStatus old_status{};
     if (DDS_DataReader_get_subscription_matched_status(subscription->reader, &old_status) ==
       DDS_RETCODE_OK)
     {
-      rmw_zzdds_cpp::accumulate_subscription_matched(subscription, old_status);
+      rmw_zzdds_cpp::accumulate_subscription_matched(
+        subscription, subscription->reader, old_status);
     }
-    subscription->matched_total_offset = subscription->subscription_matched.total_count -
-      subscription->subscription_matched.current_count;
+    saved_matched = subscription->subscription_matched;
+    saved_ready_count = subscription->reliable_writer_ready_count.load(std::memory_order_relaxed);
+    DDS_InstanceHandleSeq publications{};
+    const bool listed = DDS_DataReader_get_matched_publications(
+      subscription->reader, &publications) == DDS_RETCODE_OK;
+    subscription->subscription_matched.begin_replacement(
+      listed ? publications._buffer : nullptr, listed ? publications._length : 0U);
+    DDS_InstanceHandleSeq_free(&publications);
     subscription->reliable_writer_ready_count.store(0, std::memory_order_relaxed);
   }
-  const auto restore_old_reader = [subscription, saved_total_offset, saved_ready_count]() {
-    {
-      const std::lock_guard<std::mutex> lock(subscription->event_mutex);
-      subscription->matched_total_offset = saved_total_offset;
-      subscription->reliable_writer_ready_count.store(saved_ready_count, std::memory_order_relaxed);
-    }
-    (void)rmw_zzdds_cpp::apply_subscription_listener(subscription);
-  };
+  const auto restore_old_reader = [&]() {
+      {
+        const std::lock_guard<std::mutex> lock(subscription->event_mutex);
+        subscription->subscription_matched = std::move(saved_matched);
+        subscription->reliable_writer_ready_count.store(
+          saved_ready_count, std::memory_order_relaxed);
+      }
+      (void)rmw_zzdds_cpp::apply_subscription_listener(subscription);
+    };
   // Same listener as the reader it replaces, installed at creation, so the
   // subscription's rmw event callbacks keep working after a filter change.
   DDS_DataReader new_reader =

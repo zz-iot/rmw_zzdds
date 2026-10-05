@@ -120,6 +120,13 @@ if(BUILD_TESTING)
     )
   endif()
 
+  ament_add_gtest(test_matched_status test/test_matched_status.cpp)
+  if(TARGET test_matched_status)
+    target_compile_features(test_matched_status PRIVATE cxx_std_17)
+    target_include_directories(test_matched_status PRIVATE include)
+    target_link_libraries(test_matched_status ZZDDS::zzdds)
+  endif()
+
   ament_add_gtest(test_zzdds_c_binding test/test_zzdds_c_binding.cpp)
   if(TARGET test_zzdds_c_binding)
     target_compile_features(test_zzdds_c_binding PRIVATE cxx_std_17)
