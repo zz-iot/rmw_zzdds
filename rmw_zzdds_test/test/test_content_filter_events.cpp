@@ -2,11 +2,13 @@
 #include <chrono>
 #include <functional>
 #include <thread>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 #include "rcutils/allocator.h"
 #include "rmw/enclave.h"
+#include "rmw/error_handling.h"
 #include "rmw/events_statuses/matched.h"
 #include "rmw/rmw.h"
 #include "rmw/subscription_content_filter_options.h"
@@ -37,11 +39,50 @@ size_t matched_publishers(const rmw_subscription_t * subscription)
   return count;
 }
 
-// A content-filter expression change replaces the subscription's DDS reader.
-// The subscription's matched event must continue across the replacement: the
-// already-matched publisher is not reported as a new match, and a publisher
-// that appears afterwards still reaches the registered callback.
-TEST(EventTransport, subscription_matched_continues_across_content_filter_change)
+void publish_id(const rmw_publisher_t * publisher, uint32_t id)
+{
+  rmw_zzdds_test::msg::PrimitiveRecord message;
+  message.id = id;
+  ASSERT_EQ(RMW_RET_OK, rmw_publish(publisher, &message, nullptr)) << rmw_get_error_string().str;
+}
+
+// Takes samples until `count` have arrived or 10 s pass; returns their ids.
+std::vector<uint32_t> take_ids(const rmw_subscription_t * subscription, size_t count)
+{
+  std::vector<uint32_t> ids;
+  (void)wait_until([&] {
+      rmw_zzdds_test::msg::PrimitiveRecord message;
+      bool taken = false;
+      while (rmw_take(subscription, &message, &taken, nullptr) == RMW_RET_OK && taken) {
+        ids.push_back(message.id);
+      }
+      return ids.size() >= count;
+    });
+  return ids;
+}
+
+void set_filter(
+  rmw_subscription_t * subscription, const char * expression, const char * parameter)
+{
+  auto allocator = rcutils_get_default_allocator();
+  auto filter = rmw_get_zero_initialized_content_filter_options();
+  const char * parameters[] = {parameter};
+  ASSERT_EQ(
+    RMW_RET_OK,
+    rmw_subscription_content_filter_options_init(
+      expression, parameter == nullptr ? 0U : 1U, parameter == nullptr ? nullptr : parameters,
+      &allocator, &filter));
+  EXPECT_EQ(RMW_RET_OK, rmw_subscription_set_content_filter(subscription, &filter))
+    << rmw_get_error_string().str;
+  EXPECT_EQ(RMW_RET_OK, rmw_subscription_content_filter_options_fini(&filter, &allocator));
+}
+
+// rmw_subscription_set_content_filter changes the filter in place, on the same
+// DDS reader: the subscription stays matched (no new match is reported), a
+// sample received before the change is still there to take, the new filter
+// applies to samples received afterwards, an empty expression clears it, and
+// matched events keep reaching the registered callback.
+TEST(EventTransport, content_filter_changes_in_place)
 {
   auto allocator = rcutils_get_default_allocator();
   auto options = rmw_get_zero_initialized_init_options();
@@ -61,6 +102,7 @@ TEST(EventTransport, subscription_matched_continues_across_content_filter_change
   rmw_subscription_t * subscription = rmw_create_subscription(
     node, type_support, topic, &qos, &subscription_options);
   ASSERT_NE(nullptr, subscription);
+  EXPECT_FALSE(subscription->is_cft_enabled);
   rmw_event_t event = rmw_get_zero_initialized_event();
   ASSERT_EQ(
     RMW_RET_OK, rmw_subscription_event_init(&event, subscription, RMW_EVENT_SUBSCRIPTION_MATCHED));
@@ -82,23 +124,52 @@ TEST(EventTransport, subscription_matched_continues_across_content_filter_change
   EXPECT_EQ(1U, status.current_count);
   EXPECT_EQ(1, status.current_count_change);
 
-  // An expression (not just parameter) change replaces the reader.
-  auto filter = rmw_get_zero_initialized_content_filter_options();
+  // A sample that has arrived but not been taken yet.
+  publish_id(first, 5U);
+  rmw_wait_set_t * wait_set = rmw_create_wait_set(&context, 1U);
+  ASSERT_NE(nullptr, wait_set);
+  void * subscription_entries[] = {subscription->data};
+  rmw_subscriptions_t subscriptions{1U, subscription_entries};
+  const rmw_time_t wait_timeout{10U, 0U};
   ASSERT_EQ(
     RMW_RET_OK,
-    rmw_subscription_content_filter_options_init("id > 10", 0U, nullptr, &allocator, &filter));
-  ASSERT_EQ(RMW_RET_OK, rmw_subscription_set_content_filter(subscription, &filter));
-  EXPECT_EQ(RMW_RET_OK, rmw_subscription_content_filter_options_fini(&filter, &allocator));
-  EXPECT_TRUE(subscription->is_cft_enabled);
-  ASSERT_TRUE(wait_until([&] {return matched_publishers(subscription) == 1U;}));
+    rmw_wait(&subscriptions, nullptr, nullptr, nullptr, nullptr, wait_set, &wait_timeout));
+  ASSERT_NE(nullptr, subscription_entries[0]);
+  EXPECT_EQ(RMW_RET_OK, rmw_destroy_wait_set(wait_set));
 
-  // The replacement reader re-matched the same publisher: no new match.
+  // Add a filter (an expression change, not just parameters).
+  set_filter(subscription, "id > %0", "10");
+  EXPECT_TRUE(subscription->is_cft_enabled);
+  auto current = rmw_get_zero_initialized_content_filter_options();
+  ASSERT_EQ(RMW_RET_OK, rmw_subscription_get_content_filter(subscription, &allocator, &current));
+  EXPECT_STREQ("id > %0", current.filter_expression);
+  ASSERT_EQ(1U, current.expression_parameters.size);
+  EXPECT_STREQ("10", current.expression_parameters.data[0]);
+  EXPECT_EQ(RMW_RET_OK, rmw_subscription_content_filter_options_fini(&current, &allocator));
+
+  // Still the same match: nothing new to report.
+  EXPECT_EQ(1U, matched_publishers(subscription));
   ASSERT_EQ(RMW_RET_OK, rmw_take_event(&event, &status, &taken));
   EXPECT_TRUE(taken);
   EXPECT_EQ(1U, status.total_count);
   EXPECT_EQ(0U, status.total_count_change);
   EXPECT_EQ(1U, status.current_count);
   EXPECT_EQ(0, status.current_count_change);
+
+  // The sample from before the change survives; 7 is filtered out.
+  publish_id(first, 7U);
+  publish_id(first, 20U);
+  EXPECT_EQ((std::vector<uint32_t>{5U, 20U}), take_ids(subscription, 2U));
+
+  // An empty expression clears the filter.
+  set_filter(subscription, "", nullptr);
+  EXPECT_FALSE(subscription->is_cft_enabled);
+  current = rmw_get_zero_initialized_content_filter_options();
+  EXPECT_EQ(
+    RMW_RET_UNSUPPORTED, rmw_subscription_get_content_filter(subscription, &allocator, &current));
+  rmw_reset_error();
+  publish_id(first, 3U);
+  EXPECT_EQ((std::vector<uint32_t>{3U}), take_ids(subscription, 1U));
 
   // A new publisher is still reported through the callback.
   const size_t callbacks_before = callback_count.load();

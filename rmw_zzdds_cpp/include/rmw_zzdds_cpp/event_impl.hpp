@@ -27,19 +27,6 @@ void cleanup_endpoint_events(SubscriptionImpl * impl);
 // Returns nullptr on failure.
 DDS_DataReader create_subscription_reader(
   SubscriptionImpl * impl, DDS_TopicDescription topic_description, const DDS_DataReaderQos * qos);
-// Folds `reader`'s SubscriptionMatchedStatus into impl->subscription_matched
-// (see SubscriptionMatchedContinuity::fold), passing the reader's matched
-// publications when an inherited one is still outstanding. `reader` is the
-// reader the status came from, which during a content-filter change is not
-// yet impl->reader. Caller holds impl->event_mutex.
-void accumulate_subscription_matched(
-  SubscriptionImpl * impl, DDS_DataReader reader,
-  const DDS_SubscriptionMatchedStatus & reader_status);
-// Folds `reader`'s current matched status into impl->subscription_matched
-// and, if that changed the status, signals the subscription-matched event
-// as the listener would. For when the reader's own listener will not report
-// the change (it was detached meanwhile).
-void refresh_subscription_matched(SubscriptionImpl * impl, DDS_DataReader reader);
 // Reinstalls impl->reader's full listener. Call any time impl->event_callbacks
 // changes -- the base DDS_DataReaderListener path a plain
 // DDS_DataReader_set_listener call would use replaces the whole listener,

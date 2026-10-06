@@ -9,17 +9,20 @@ find_package(rosidl_typesupport_zzdds_cpp REQUIRED)
 find_package(rosidl_typesupport_zzdds_c REQUIRED)
 find_package(ZZDDS CONFIG REQUIRED)
 
-# rmw_zzdds_cpp needs zzdds >= v0.3.5-zig.0.16.0: rmw_service_server_is_available's
+# rmw_zzdds_cpp needs zzdds >= v0.3.6-zig.0.16.0: rmw_service_server_is_available's
 # readiness tracking installs zzdds's on_reliable_writer_ready listener at reader
-# creation via zzdds_Subscriber_create_datareader_ex (added in v0.3.4), and
-# v0.3.5 fixes matches and publisher GUIDs that service availability and take
-# depend on (see README.md's Development baseline). ZZDDS_VERSION (from zzdds's
-# own build.zig.zon) looks like "0.3.5-zig.0.16.0", with "-dev" on development
-# builds, so compare its leading MAJOR.MINOR.PATCH. The symbol probe below also
-# catches a build whose version string can't be parsed. Failing here, at
+# creation via zzdds_Subscriber_create_datareader_ex (added in v0.3.4); v0.3.5
+# fixes matches and publisher GUIDs that service availability and take depend
+# on; and v0.3.6 adds zzdds_ContentFilteredTopic_set_filter_expression, which
+# rmw_subscription_set_content_filter uses to change a filter in place, and
+# stops raising listeners while zzdds holds its own locks (see README.md's
+# Development baseline). ZZDDS_VERSION (from zzdds's own build.zig.zon) looks
+# like "0.3.6-zig.0.16.0", with "-dev" on development builds, so compare its
+# leading MAJOR.MINOR.PATCH. The symbol probes below also catch a build whose
+# version string can't be parsed. Failing here, at
 # configure time, beats an older zzdds producing a confusing compile error or
 # runtime failure later.
-set(_zzdds_min_version "0.3.5")
+set(_zzdds_min_version "0.3.6")
 string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" _zzdds_numeric_version "${ZZDDS_VERSION}")
 if(_zzdds_numeric_version AND _zzdds_numeric_version VERSION_LESS _zzdds_min_version)
   message(FATAL_ERROR
@@ -32,6 +35,8 @@ get_target_property(_zzdds_include_dir ZZDDS::zzdds INTERFACE_INCLUDE_DIRECTORIE
 set(CMAKE_REQUIRED_INCLUDES "${_zzdds_include_dir}")
 set(CMAKE_REQUIRED_LIBRARIES ZZDDS::zzdds)
 check_symbol_exists(zzdds_Subscriber_create_datareader_ex "zzdds.h" ZZDDS_HAS_CREATE_DATAREADER_EX)
+check_symbol_exists(
+  zzdds_ContentFilteredTopic_set_filter_expression "zzdds.h" ZZDDS_HAS_SET_FILTER_EXPRESSION)
 unset(CMAKE_REQUIRED_INCLUDES)
 unset(CMAKE_REQUIRED_LIBRARIES)
 unset(_zzdds_include_dir)
@@ -39,6 +44,12 @@ if(NOT ZZDDS_HAS_CREATE_DATAREADER_EX)
   message(FATAL_ERROR
     "rmw_zzdds_cpp requires zzdds >= v${_zzdds_min_version}-zig.0.16.0 (found "
     "ZZDDS_VERSION=${ZZDDS_VERSION}, missing zzdds_Subscriber_create_datareader_ex). "
+    "See README.md's Development baseline for the supported zzdds release.")
+endif()
+if(NOT ZZDDS_HAS_SET_FILTER_EXPRESSION)
+  message(FATAL_ERROR
+    "rmw_zzdds_cpp requires zzdds >= v${_zzdds_min_version}-zig.0.16.0 (found "
+    "ZZDDS_VERSION=${ZZDDS_VERSION}, missing zzdds_ContentFilteredTopic_set_filter_expression). "
     "See README.md's Development baseline for the supported zzdds release.")
 endif()
 unset(_zzdds_numeric_version)
@@ -118,13 +129,6 @@ if(BUILD_TESTING)
       ENVIRONMENT_MODIFICATION
         "LD_LIBRARY_PATH=path_list_prepend:${_zzdds_library_dir}"
     )
-  endif()
-
-  ament_add_gtest(test_matched_status test/test_matched_status.cpp)
-  if(TARGET test_matched_status)
-    target_compile_features(test_matched_status PRIVATE cxx_std_17)
-    target_include_directories(test_matched_status PRIVATE include)
-    target_link_libraries(test_matched_status ZZDDS::zzdds)
   endif()
 
   ament_add_gtest(test_zzdds_c_binding test/test_zzdds_c_binding.cpp)

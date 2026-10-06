@@ -11,7 +11,6 @@
 #include "zzdds_c.h"
 
 #include "rmw_zzdds_cpp/context_impl.hpp"
-#include "rmw_zzdds_cpp/matched_status.hpp"
 
 namespace rmw_zzdds_cpp
 {
@@ -56,6 +55,8 @@ struct SubscriptionImpl final
   ContextImpl * context;
   const rmw_node_t * node;
   DDS_Topic topic;
+  // Always set: the reader reads through it, with an empty expression when
+  // the subscription has no content filter (see create_filtered_topic).
   DDS_ContentFilteredTopic filtered_topic;
   DDS_DataReader reader;
   DDS_ReadCondition read_condition;
@@ -68,9 +69,7 @@ struct SubscriptionImpl final
   std::array<DDS_GuardCondition, RMW_EVENT_TYPE_MAX> event_guards{};
   std::array<rmw_event_callback_t, RMW_EVENT_TYPE_MAX> event_callbacks{};
   std::array<const void *, RMW_EVENT_TYPE_MAX> event_user_data{};
-  // Continuous across content-filter reader replacements (see
-  // replace_subscription_filter). Guarded by event_mutex.
-  SubscriptionMatchedContinuity subscription_matched;
+  DDS_SubscriptionMatchedStatus subscription_matched{};
   DDS_LivelinessChangedStatus liveliness_changed{};
   DDS_RequestedDeadlineMissedStatus requested_deadline_missed{};
   DDS_RequestedIncompatibleQosStatus requested_incompatible_qos{};
@@ -84,7 +83,7 @@ struct SubscriptionImpl final
   // Delta-updated the same way zzdds's own PublicationMatchedStatus/
   // SubscriptionMatchedStatus current_count fields are -- see
   // apply_subscription_listener(). > 0 is a strictly stronger readiness
-  // signal than subscription_matched.status.current_count > 0 for RELIABLE
+  // signal than subscription_matched.current_count > 0 for RELIABLE
   // matches; used by rmw_service_server_is_available() to close the race
   // documented in zzdds's docs/design/discovery-association-race-testing.md.
   std::atomic_int32_t reliable_writer_ready_count{0};

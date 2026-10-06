@@ -1,5 +1,3 @@
-#include <algorithm>
-
 #include "rmw/error_handling.h"
 #include "rmw/events_statuses/matched.h"
 #include "rmw/events_statuses/liveliness_changed.h"
@@ -82,14 +80,17 @@ void publication_matched_listener(
 }
 
 void subscription_matched_listener(
-  DDS_DataReader reader, const DDS_SubscriptionMatchedStatus * status, void * data)
+  DDS_DataReader, const DDS_SubscriptionMatchedStatus * status, void * data)
 {
   auto * impl = static_cast<SubscriptionImpl *>(data);
   rmw_event_callback_t callback = nullptr;
   const void * user_data = nullptr;
   {
     const std::lock_guard<std::mutex> lock(impl->event_mutex);
-    rmw_zzdds_cpp::accumulate_subscription_matched(impl, reader, *status);
+    impl->subscription_matched.total_count = status->total_count;
+    impl->subscription_matched.total_count_change += status->total_count_change;
+    impl->subscription_matched.current_count = status->current_count;
+    impl->subscription_matched.current_count_change += status->current_count_change;
     impl->subscription_matched_pending = true;
     callback = impl->event_callbacks[RMW_EVENT_SUBSCRIPTION_MATCHED];
     user_data = impl->event_user_data[RMW_EVENT_SUBSCRIPTION_MATCHED];
@@ -328,50 +329,6 @@ DDS_StatusMask subscription_listener(SubscriptionImpl * impl, zzdds_DataReaderLi
 }
 }  // namespace
 
-void accumulate_subscription_matched(
-  SubscriptionImpl * impl, DDS_DataReader reader,
-  const DDS_SubscriptionMatchedStatus & reader_status)
-{
-  auto & matched = impl->subscription_matched;
-  if (matched.inherited.empty()) {
-    matched.fold(reader_status, nullptr, 0U);
-    return;
-  }
-  DDS_InstanceHandleSeq publications{};
-  const bool listed =
-    DDS_DataReader_get_matched_publications(reader, &publications) == DDS_RETCODE_OK;
-  matched.fold(
-    reader_status, listed ? publications._buffer : nullptr, listed ? publications._length : 0U);
-  DDS_InstanceHandleSeq_free(&publications);
-}
-
-void refresh_subscription_matched(SubscriptionImpl * impl, DDS_DataReader reader)
-{
-  DDS_SubscriptionMatchedStatus reader_status{};
-  if (DDS_DataReader_get_subscription_matched_status(reader, &reader_status) != DDS_RETCODE_OK) {
-    return;
-  }
-  rmw_event_callback_t callback = nullptr;
-  const void * user_data = nullptr;
-  {
-    const std::lock_guard<std::mutex> lock(impl->event_mutex);
-    const DDS_SubscriptionMatchedStatus before = impl->subscription_matched.status;
-    accumulate_subscription_matched(impl, reader, reader_status);
-    const DDS_SubscriptionMatchedStatus & after = impl->subscription_matched.status;
-    if (after.total_count_change == before.total_count_change &&
-      after.current_count_change == before.current_count_change)
-    {
-      return;
-    }
-    impl->subscription_matched_pending = true;
-    callback = impl->event_callbacks[RMW_EVENT_SUBSCRIPTION_MATCHED];
-    user_data = impl->event_user_data[RMW_EVENT_SUBSCRIPTION_MATCHED];
-    (void)DDS_GuardCondition_set_trigger_value(
-      impl->event_guards[RMW_EVENT_SUBSCRIPTION_MATCHED], true);
-  }
-  if (callback != nullptr) {callback(user_data, 1U);}
-}
-
 DDS_DataReader create_subscription_reader(
   SubscriptionImpl * impl, DDS_TopicDescription topic_description, const DDS_DataReaderQos * qos)
 {
@@ -456,20 +413,15 @@ rmw_ret_t rmw_take_event(const rmw_event_t * event, void * event_info, bool * ta
     {
       const std::lock_guard<std::mutex> lock(impl->event_mutex);
       if (impl->event_callbacks[event->event_type] != nullptr) {
-        status = impl->subscription_matched.take();
+        status = impl->subscription_matched;
+        impl->subscription_matched.total_count_change = 0;
+        impl->subscription_matched.current_count_change = 0;
         impl->subscription_matched_pending = false;
         (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event->event_type], false);
-      } else {
-        // Through the same accumulation as the listener, so the status
-        // continues across a content-filter reader replacement here too.
-        DDS_SubscriptionMatchedStatus reader_status{};
-        if (DDS_DataReader_get_subscription_matched_status(impl->reader, &reader_status) !=
-          DDS_RETCODE_OK)
-        {
-          return RMW_RET_ERROR;
-        }
-        rmw_zzdds_cpp::accumulate_subscription_matched(impl, impl->reader, reader_status);
-        status = impl->subscription_matched.take();
+      } else if (DDS_DataReader_get_subscription_matched_status(
+          impl->reader, &status) != DDS_RETCODE_OK)
+      {
+        return RMW_RET_ERROR;
       }
     }
     output->total_count = static_cast<size_t>(status.total_count);
