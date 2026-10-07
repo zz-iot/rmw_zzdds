@@ -36,7 +36,9 @@ struct PublisherImpl final
   std::array<DDS_GuardCondition, RMW_EVENT_TYPE_MAX> event_guards{};
   std::array<rmw_event_callback_t, RMW_EVENT_TYPE_MAX> event_callbacks{};
   std::array<const void *, RMW_EVENT_TYPE_MAX> event_user_data{};
-  // Untaken events already reported to a callback; see rmw_event.cpp.
+  // Events since the last take, and how many of them a callback has been told
+  // about; see rmw_event.cpp.
+  std::array<size_t, RMW_EVENT_TYPE_MAX> event_count{};
   std::array<size_t, RMW_EVENT_TYPE_MAX> event_reported{};
   DDS_PublicationMatchedStatus publication_matched{};
   DDS_LivelinessLostStatus liveliness_lost{};
@@ -70,7 +72,9 @@ struct SubscriptionImpl final
   std::array<DDS_GuardCondition, RMW_EVENT_TYPE_MAX> event_guards{};
   std::array<rmw_event_callback_t, RMW_EVENT_TYPE_MAX> event_callbacks{};
   std::array<const void *, RMW_EVENT_TYPE_MAX> event_user_data{};
-  // Untaken events already reported to a callback; see rmw_event.cpp.
+  // Events since the last take, and how many of them a callback has been told
+  // about; see rmw_event.cpp.
+  std::array<size_t, RMW_EVENT_TYPE_MAX> event_count{};
   std::array<size_t, RMW_EVENT_TYPE_MAX> event_reported{};
   DDS_SubscriptionMatchedStatus subscription_matched{};
   DDS_LivelinessChangedStatus liveliness_changed{};

@@ -149,10 +149,12 @@ TEST_F(EventCallbacks, changes_before_registration_reach_the_new_callback)
   expect_taken(2U, 2U, 2U, 2);
 }
 
-// Every event reaches the callback even when one status read finds several
-// (publishers matching concurrently, before the listener reads the status):
-// the callback is given the number of events, not one per read.
-TEST_F(EventCallbacks, coalesced_changes_are_all_reported)
+// The counts reported to the callback add up to the number of events when
+// publishers match concurrently. A read that finds several changes reports
+// them all; this test cannot force that interleaving (each local match's
+// listener usually reads before the next match), so it checks the total
+// rather than reproducing the coalescing.
+TEST_F(EventCallbacks, concurrent_matches_are_all_reported)
 {
   ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, count_events, &callback_count_));
   match_publishers(4U);
@@ -184,5 +186,28 @@ TEST_F(EventCallbacks, changes_survive_clearing_the_callback)
   ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, nullptr, nullptr));
   expect_taken(1U, 1U, 1U, 1);
   expect_taken(1U, 0U, 1U, 0);
+}
+// Events while no callback is registered (after one was cleared) are reported
+// to the next callback; the ones already reported are not.
+TEST_F(EventCallbacks, events_after_clearing_reach_the_next_callback)
+{
+  ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, count_events, &callback_count_));
+  match_publishers(1U);
+  ASSERT_TRUE(wait_until([&] {return callback_count_.load() >= 1U;}));
+  ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, nullptr, nullptr));
+  // An unmatch and a match while no callback is registered.
+  ASSERT_EQ(RMW_RET_OK, rmw_destroy_publisher(node_, publishers_.back()));
+  publishers_.pop_back();
+  ASSERT_TRUE(
+    wait_until(
+      [&] {
+        size_t matched = 1U;
+        return rmw_subscription_count_matched_publishers(subscription_, &matched) ==
+        RMW_RET_OK && matched == 0U;
+      }));
+  match_publishers(1U);
+  ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, count_events, &callback_count_));
+  EXPECT_EQ(3U, callback_count_.load());
+  expect_taken(2U, 2U, 1U, 1);
 }
 }  // namespace
