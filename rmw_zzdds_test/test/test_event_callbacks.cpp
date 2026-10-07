@@ -9,8 +9,10 @@
 #include "rcutils/allocator.h"
 #include "rmw/enclave.h"
 #include "rmw/error_handling.h"
+#include "rmw/events_statuses/liveliness_changed.h"
 #include "rmw/events_statuses/matched.h"
 #include "rmw/rmw.h"
+#include "rmw_zzdds_cpp/endpoint_impl.hpp"
 #include "rmw_zzdds_test/msg/primitive_record.hpp"
 #include "rosidl_typesupport_zzdds_cpp/message_type_support.hpp"
 
@@ -113,6 +115,27 @@ protected:
     EXPECT_EQ(current_change, status.current_count_change);
   }
 
+  // Whether a wait on `event` alone returns at once.
+  bool ready(rmw_event_t & event)
+  {
+    rmw_wait_set_t * wait_set = rmw_create_wait_set(&context_, 1U);
+    EXPECT_NE(nullptr, wait_set);
+    void * entries[] = {&event};
+    rmw_events_t events{1U, entries};
+    const rmw_time_t timeout{0U, 0U};
+    const rmw_ret_t ret = rmw_wait(nullptr, nullptr, nullptr, nullptr, &events, wait_set, &timeout);
+    EXPECT_EQ(RMW_RET_OK, rmw_destroy_wait_set(wait_set));
+    EXPECT_TRUE(ret == RMW_RET_OK || ret == RMW_RET_TIMEOUT);
+    return ret == RMW_RET_OK && entries[0] != nullptr;
+  }
+
+  // The zzdds listener rmw_zzdds installed on the subscription's reader.
+  DDS_DataReaderListener reader_listener()
+  {
+    auto * impl = static_cast<rmw_zzdds_cpp::SubscriptionImpl *>(subscription_->data);
+    return DDS_DataReader_get_listener(impl->reader);
+  }
+
   const char * topic_ = "/event_callbacks";
   rcutils_allocator_t allocator_{};
   rmw_init_options_t options_{};
@@ -209,5 +232,55 @@ TEST_F(EventCallbacks, events_after_clearing_reach_the_next_callback)
   ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, count_events, &callback_count_));
   EXPECT_EQ(3U, callback_count_.load());
   expect_taken(2U, 2U, 1U, 1);
+}
+
+// zzdds calls a listener after releasing its lock, so a take can read a change
+// before the change's listener runs. That listener then finds nothing new: it
+// neither triggers the event nor calls the callback. The test replays the late
+// listener call by calling the installed listener itself.
+TEST_F(EventCallbacks, a_listener_running_after_its_change_was_taken_reports_nothing)
+{
+  ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, count_events, &callback_count_));
+  match_publishers(1U);
+  ASSERT_TRUE(wait_until([&] {return callback_count_.load() >= 1U;}));
+  expect_taken(1U, 1U, 1U, 1);
+  ASSERT_FALSE(ready(event_));
+
+  const DDS_DataReaderListener listener = reader_listener();
+  ASSERT_NE(nullptr, listener.on_subscription_matched);
+  DDS_SubscriptionMatchedStatus late{};
+  late.total_count = 1;
+  late.total_count_change = 1;
+  late.current_count = 1;
+  late.current_count_change = 1;
+  listener.on_subscription_matched(nullptr, &late, listener.listener_data);
+
+  EXPECT_EQ(1U, callback_count_.load());
+  EXPECT_FALSE(ready(event_));
+  expect_taken(1U, 0U, 1U, 0);
+}
+
+// The same for liveliness changed, whose listener compares the status zzdds
+// passed with the one at the last take (or, as here, before any change): a
+// listener passing that status counts nothing.
+TEST_F(EventCallbacks, a_liveliness_listener_passing_the_taken_status_reports_nothing)
+{
+  rmw_event_t liveliness = rmw_get_zero_initialized_event();
+  ASSERT_EQ(
+    RMW_RET_OK,
+    rmw_subscription_event_init(&liveliness, subscription_, RMW_EVENT_LIVELINESS_CHANGED));
+  std::atomic_size_t liveliness_count{0U};
+  ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&liveliness, count_events, &liveliness_count));
+  ASSERT_FALSE(ready(liveliness));
+
+  const DDS_DataReaderListener listener = reader_listener();
+  ASSERT_NE(nullptr, listener.on_liveliness_changed);
+  DDS_LivelinessChangedStatus late{};
+  listener.on_liveliness_changed(nullptr, &late, listener.listener_data);
+
+  EXPECT_EQ(0U, liveliness_count.load());
+  EXPECT_FALSE(ready(liveliness));
+  EXPECT_EQ(RMW_RET_OK, rmw_event_set_callback(&liveliness, nullptr, nullptr));
+  EXPECT_EQ(RMW_RET_OK, rmw_event_fini(&liveliness));
 }
 }  // namespace
