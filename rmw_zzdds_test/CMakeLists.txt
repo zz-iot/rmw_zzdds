@@ -77,6 +77,30 @@ if(BUILD_TESTING)
         "LD_LIBRARY_PATH=path_list_prepend:${_zzdds_library_dir}")
   endif()
 
+  ament_add_gtest(test_content_filter_events test/test_content_filter_events.cpp)
+  if(TARGET test_content_filter_events)
+    target_compile_features(test_content_filter_events PRIVATE cxx_std_17)
+    target_link_libraries(test_content_filter_events
+      ${zzdds_typesupport_target}
+      rmw_zzdds_cpp::rmw_zzdds_cpp
+      ZZDDS::zzdds)
+    set_tests_properties(test_content_filter_events PROPERTIES
+      ENVIRONMENT_MODIFICATION
+        "LD_LIBRARY_PATH=path_list_prepend:${_zzdds_library_dir}")
+  endif()
+
+  ament_add_gtest(test_event_callbacks test/test_event_callbacks.cpp)
+  if(TARGET test_event_callbacks)
+    target_compile_features(test_event_callbacks PRIVATE cxx_std_17)
+    target_link_libraries(test_event_callbacks
+      ${zzdds_typesupport_target}
+      rmw_zzdds_cpp::rmw_zzdds_cpp
+      ZZDDS::zzdds)
+    set_tests_properties(test_event_callbacks PROPERTIES
+      ENVIRONMENT_MODIFICATION
+        "LD_LIBRARY_PATH=path_list_prepend:${_zzdds_library_dir}")
+  endif()
+
   ament_add_gtest(test_local_graph test/test_local_graph.cpp)
   if(TARGET test_local_graph)
     target_compile_features(test_local_graph PRIVATE cxx_std_17)

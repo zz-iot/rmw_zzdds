@@ -87,10 +87,13 @@ endpoint with its remote ROS node, and remove it after a not-alive built-in
 instance change.
 
 Content-filtered subscriptions use zzdds ContentFilteredTopic evaluation with
-generated ROS CDR field accessors. Parameter-only updates preserve the reader;
-expression changes and reset replace the reader and filtered topic while
-retaining the RMW subscription handle. The upstream creation, get/set,
-filtering, reset, and same-base-topic lifecycle tests pass.
+generated ROS CDR field accessors. Every subscription reads through a
+content-filtered topic, with an empty expression when it has no filter, so
+setting, changing and clearing a filter all happen in place
+(`zzdds::ContentFilteredTopic::set_filter_expression`): the reader keeps its
+matches, untaken samples and reliable readiness. `test_content_filter_events`
+covers that; the upstream creation, get/set, filtering, reset, and
+same-base-topic lifecycle tests pass.
 
 The focused RMW suite additionally exercises the compatibility-loan data path
 end to end: borrow, populate, publish, deserialize into a subscription loan,

@@ -36,11 +36,14 @@ struct PublisherImpl final
   std::array<DDS_GuardCondition, RMW_EVENT_TYPE_MAX> event_guards{};
   std::array<rmw_event_callback_t, RMW_EVENT_TYPE_MAX> event_callbacks{};
   std::array<const void *, RMW_EVENT_TYPE_MAX> event_user_data{};
+  // Events since the last take, and how many of them a callback has been told
+  // about; see rmw_event.cpp.
+  std::array<size_t, RMW_EVENT_TYPE_MAX> event_count{};
+  std::array<size_t, RMW_EVENT_TYPE_MAX> event_reported{};
   DDS_PublicationMatchedStatus publication_matched{};
   DDS_LivelinessLostStatus liveliness_lost{};
   DDS_OfferedDeadlineMissedStatus offered_deadline_missed{};
   DDS_OfferedIncompatibleQosStatus offered_incompatible_qos{};
-  bool publication_matched_pending{false};
   bool is_service_endpoint{false};
 };
 
@@ -55,6 +58,8 @@ struct SubscriptionImpl final
   ContextImpl * context;
   const rmw_node_t * node;
   DDS_Topic topic;
+  // Always set: the reader reads through it, with an empty expression when
+  // the subscription has no content filter (see create_filtered_topic).
   DDS_ContentFilteredTopic filtered_topic;
   DDS_DataReader reader;
   DDS_ReadCondition read_condition;
@@ -67,13 +72,15 @@ struct SubscriptionImpl final
   std::array<DDS_GuardCondition, RMW_EVENT_TYPE_MAX> event_guards{};
   std::array<rmw_event_callback_t, RMW_EVENT_TYPE_MAX> event_callbacks{};
   std::array<const void *, RMW_EVENT_TYPE_MAX> event_user_data{};
+  // Events since the last take, and how many of them a callback has been told
+  // about; see rmw_event.cpp.
+  std::array<size_t, RMW_EVENT_TYPE_MAX> event_count{};
+  std::array<size_t, RMW_EVENT_TYPE_MAX> event_reported{};
   DDS_SubscriptionMatchedStatus subscription_matched{};
   DDS_LivelinessChangedStatus liveliness_changed{};
   DDS_RequestedDeadlineMissedStatus requested_deadline_missed{};
   DDS_RequestedIncompatibleQosStatus requested_incompatible_qos{};
   DDS_SampleLostStatus sample_lost{};
-  bool subscription_matched_pending{false};
-  bool liveliness_changed_pending{false};
   bool is_service_endpoint{false};
   // Count of matched writers that have proven (via zzdds's
   // DataReaderListenerEx::on_reliable_writer_ready) they've actually
