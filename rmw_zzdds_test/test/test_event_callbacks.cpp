@@ -2,6 +2,7 @@
 #include <chrono>
 #include <functional>
 #include <thread>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -64,7 +65,9 @@ protected:
     // Before destroying the publisher, whose unmatch would otherwise reach it.
     EXPECT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, nullptr, nullptr));
     EXPECT_EQ(RMW_RET_OK, rmw_event_fini(&event_));
-    if (publisher_ != nullptr) {EXPECT_EQ(RMW_RET_OK, rmw_destroy_publisher(node_, publisher_));}
+    for (rmw_publisher_t * publisher : publishers_) {
+      EXPECT_EQ(RMW_RET_OK, rmw_destroy_publisher(node_, publisher));
+    }
     EXPECT_EQ(RMW_RET_OK, rmw_destroy_subscription(node_, subscription_));
     EXPECT_EQ(RMW_RET_OK, rmw_destroy_node(node_));
     EXPECT_EQ(RMW_RET_OK, rmw_shutdown(&context_));
@@ -72,17 +75,29 @@ protected:
     EXPECT_EQ(RMW_RET_OK, rmw_init_options_fini(&options_));
   }
 
-  void match_publisher()
+  // Creates `count` more publishers, each on its own thread, and waits until
+  // the subscription matches all of them.
+  void match_publishers(size_t count)
   {
-    const auto publisher_options = rmw_get_default_publisher_options();
-    publisher_ = rmw_create_publisher(node_, type_support_, topic_, &qos_, &publisher_options);
-    ASSERT_NE(nullptr, publisher_);
+    const size_t first = publishers_.size();
+    publishers_.resize(first + count, nullptr);
+    std::vector<std::thread> threads;
+    for (size_t i = first; i < publishers_.size(); ++i) {
+      threads.emplace_back(
+        [this, i] {
+          const auto publisher_options = rmw_get_default_publisher_options();
+          publishers_[i] = rmw_create_publisher(
+            node_, type_support_, topic_, &qos_, &publisher_options);
+        });
+    }
+    for (std::thread & thread : threads) {thread.join();}
+    for (rmw_publisher_t * publisher : publishers_) {ASSERT_NE(nullptr, publisher);}
     ASSERT_TRUE(
       wait_until(
         [&] {
-          size_t count = 0U;
-          return rmw_subscription_count_matched_publishers(subscription_, &count) ==
-          RMW_RET_OK && count == 1U;
+          size_t matched = 0U;
+          return rmw_subscription_count_matched_publishers(subscription_, &matched) ==
+          RMW_RET_OK && matched == publishers_.size();
         }));
   }
 
@@ -106,7 +121,7 @@ protected:
   const rosidl_message_type_support_t * type_support_ = nullptr;
   rmw_qos_profile_t qos_{};
   rmw_subscription_t * subscription_ = nullptr;
-  rmw_publisher_t * publisher_ = nullptr;
+  std::vector<rmw_publisher_t *> publishers_;
   rmw_event_t event_{};
   std::atomic_size_t callback_count_{0U};
 };
@@ -116,7 +131,7 @@ protected:
 // change is not reported again.
 TEST_F(EventCallbacks, status_taken_before_registering_a_callback_carries_over)
 {
-  match_publisher();
+  match_publishers(1U);
   expect_taken(1U, 1U, 1U, 1);
   ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, count_events, &callback_count_));
   EXPECT_EQ(0U, callback_count_.load());
@@ -128,7 +143,32 @@ TEST_F(EventCallbacks, status_taken_before_registering_a_callback_carries_over)
 // then taken.
 TEST_F(EventCallbacks, changes_before_registration_reach_the_new_callback)
 {
-  match_publisher();
+  match_publishers(2U);
+  ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, count_events, &callback_count_));
+  EXPECT_EQ(2U, callback_count_.load());
+  expect_taken(2U, 2U, 2U, 2);
+}
+
+// Every event reaches the callback even when one status read finds several
+// (publishers matching concurrently, before the listener reads the status):
+// the callback is given the number of events, not one per read.
+TEST_F(EventCallbacks, coalesced_changes_are_all_reported)
+{
+  ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, count_events, &callback_count_));
+  match_publishers(4U);
+  ASSERT_TRUE(wait_until([&] {return callback_count_.load() >= 4U;}));
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  EXPECT_EQ(4U, callback_count_.load());
+  expect_taken(4U, 4U, 4U, 4);
+}
+
+// Registering a callback again while reported events are still untaken does
+// not report them again.
+TEST_F(EventCallbacks, re_registering_does_not_repeat_reported_events)
+{
+  ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, count_events, &callback_count_));
+  match_publishers(1U);
+  ASSERT_TRUE(wait_until([&] {return callback_count_.load() >= 1U;}));
   ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, count_events, &callback_count_));
   EXPECT_EQ(1U, callback_count_.load());
   expect_taken(1U, 1U, 1U, 1);
@@ -139,7 +179,7 @@ TEST_F(EventCallbacks, changes_before_registration_reach_the_new_callback)
 TEST_F(EventCallbacks, changes_survive_clearing_the_callback)
 {
   ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, count_events, &callback_count_));
-  match_publisher();
+  match_publishers(1U);
   ASSERT_TRUE(wait_until([&] {return callback_count_.load() >= 1U;}));
   ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, nullptr, nullptr));
   expect_taken(1U, 1U, 1U, 1);

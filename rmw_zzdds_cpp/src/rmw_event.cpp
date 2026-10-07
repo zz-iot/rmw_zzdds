@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <cstddef>
 #include <cstdlib>
+#include <optional>
 
 #include "rmw/error_handling.h"
 #include "rmw/events_statuses/matched.h"
@@ -71,7 +73,29 @@ rmw_qos_policy_kind_t qos_policy(DDS_QosPolicyId_t id)
 // and every change is counted exactly once, whether or not a callback was
 // registered at the time. Reading zzdds under event_mutex cannot deadlock
 // against a listener: zzdds calls no listener while holding its own locks.
-bool add_changes(DDS_PublicationMatchedStatus & stored, const DDS_PublicationMatchedStatus & now)
+//
+// A read can find several changes at once (two publishers matching before the
+// listener runs), so it reports how many events it added, and callbacks are
+// given that number. event_reported counts the untaken events a callback has
+// already been told about, so registering a callback reports only the others.
+
+// Each match raises total and current by one; each unmatch lowers current only.
+size_t matched_events(int32_t total_change, int32_t current_change)
+{
+  return static_cast<size_t>(total_change) + static_cast<size_t>(total_change - current_change);
+}
+
+// Liveliness changes are visible only as net changes to the two counts. A
+// writer becoming not alive moves one from alive to not alive, so the larger
+// of the two counts each transition once (changes that cancel out within one
+// read are not counted).
+size_t liveliness_events(int32_t alive_change, int32_t not_alive_change)
+{
+  return static_cast<size_t>(std::max(std::abs(alive_change), std::abs(not_alive_change)));
+}
+
+size_t add_changes(
+  DDS_PublicationMatchedStatus & stored, const DDS_PublicationMatchedStatus & now)
 {
   const int32_t total = now.total_count - stored.total_count;
   const int32_t current = now.current_count - stored.current_count;
@@ -80,10 +104,11 @@ bool add_changes(DDS_PublicationMatchedStatus & stored, const DDS_PublicationMat
   stored.total_count = now.total_count;
   stored.current_count = now.current_count;
   stored.last_subscription_handle = now.last_subscription_handle;
-  return total != 0 || current != 0;
+  return matched_events(total, current);
 }
 
-bool add_changes(DDS_SubscriptionMatchedStatus & stored, const DDS_SubscriptionMatchedStatus & now)
+size_t add_changes(
+  DDS_SubscriptionMatchedStatus & stored, const DDS_SubscriptionMatchedStatus & now)
 {
   const int32_t total = now.total_count - stored.total_count;
   const int32_t current = now.current_count - stored.current_count;
@@ -92,10 +117,10 @@ bool add_changes(DDS_SubscriptionMatchedStatus & stored, const DDS_SubscriptionM
   stored.total_count = now.total_count;
   stored.current_count = now.current_count;
   stored.last_publication_handle = now.last_publication_handle;
-  return total != 0 || current != 0;
+  return matched_events(total, current);
 }
 
-bool add_changes(DDS_LivelinessChangedStatus & stored, const DDS_LivelinessChangedStatus & now)
+size_t add_changes(DDS_LivelinessChangedStatus & stored, const DDS_LivelinessChangedStatus & now)
 {
   const int32_t alive = now.alive_count - stored.alive_count;
   const int32_t not_alive = now.not_alive_count - stored.not_alive_count;
@@ -104,58 +129,58 @@ bool add_changes(DDS_LivelinessChangedStatus & stored, const DDS_LivelinessChang
   stored.alive_count = now.alive_count;
   stored.not_alive_count = now.not_alive_count;
   stored.last_publication_handle = now.last_publication_handle;
-  return alive != 0 || not_alive != 0;
+  return liveliness_events(alive, not_alive);
 }
 
 // Statuses that only count occurrences, plus the last-occurrence field some
 // carry (copied when the count moves).
 template<typename Status>
-bool add_count_changes(Status & stored, const Status & now)
+size_t add_count_changes(Status & stored, const Status & now)
 {
   const int32_t total = now.total_count - stored.total_count;
   stored.total_count_change += total;
   stored.total_count = now.total_count;
-  return total != 0;
+  return static_cast<size_t>(total);
 }
-bool add_changes(DDS_LivelinessLostStatus & stored, const DDS_LivelinessLostStatus & now)
+size_t add_changes(DDS_LivelinessLostStatus & stored, const DDS_LivelinessLostStatus & now)
 {
   return add_count_changes(stored, now);
 }
-bool add_changes(DDS_SampleLostStatus & stored, const DDS_SampleLostStatus & now)
+size_t add_changes(DDS_SampleLostStatus & stored, const DDS_SampleLostStatus & now)
 {
   return add_count_changes(stored, now);
 }
 template<typename Status>
-bool add_deadline_changes(Status & stored, const Status & now)
+size_t add_deadline_changes(Status & stored, const Status & now)
 {
-  if (!add_count_changes(stored, now)) {return false;}
-  stored.last_instance_handle = now.last_instance_handle;
-  return true;
+  const size_t events = add_count_changes(stored, now);
+  if (events != 0U) {stored.last_instance_handle = now.last_instance_handle;}
+  return events;
 }
-bool add_changes(
+size_t add_changes(
   DDS_OfferedDeadlineMissedStatus & stored, const DDS_OfferedDeadlineMissedStatus & now)
 {
   return add_deadline_changes(stored, now);
 }
-bool add_changes(
+size_t add_changes(
   DDS_RequestedDeadlineMissedStatus & stored, const DDS_RequestedDeadlineMissedStatus & now)
 {
   return add_deadline_changes(stored, now);
 }
 // The policies sequence is not kept: rmw reports only the last policy.
 template<typename Status>
-bool add_incompatible_qos_changes(Status & stored, const Status & now)
+size_t add_incompatible_qos_changes(Status & stored, const Status & now)
 {
-  if (!add_count_changes(stored, now)) {return false;}
-  stored.last_policy_id = now.last_policy_id;
-  return true;
+  const size_t events = add_count_changes(stored, now);
+  if (events != 0U) {stored.last_policy_id = now.last_policy_id;}
+  return events;
 }
-bool add_changes(
+size_t add_changes(
   DDS_OfferedIncompatibleQosStatus & stored, const DDS_OfferedIncompatibleQosStatus & now)
 {
   return add_incompatible_qos_changes(stored, now);
 }
-bool add_changes(
+size_t add_changes(
   DDS_RequestedIncompatibleQosStatus & stored, const DDS_RequestedIncompatibleQosStatus & now)
 {
   return add_incompatible_qos_changes(stored, now);
@@ -165,32 +190,29 @@ bool add_changes(
 // registered after they happened).
 size_t pending_events(const DDS_PublicationMatchedStatus & s)
 {
-  // Matches raise total_count; unmatches lower current_count only.
-  return static_cast<size_t>(s.total_count_change) +
-         static_cast<size_t>(s.total_count_change - s.current_count_change);
+  return matched_events(s.total_count_change, s.current_count_change);
 }
 size_t pending_events(const DDS_SubscriptionMatchedStatus & s)
 {
-  return static_cast<size_t>(s.total_count_change) +
-         static_cast<size_t>(s.total_count_change - s.current_count_change);
+  return matched_events(s.total_count_change, s.current_count_change);
 }
 size_t pending_events(const DDS_LivelinessChangedStatus & s)
 {
-  return static_cast<size_t>(std::abs(s.alive_count_change)) +
-         static_cast<size_t>(std::abs(s.not_alive_count_change));
+  return liveliness_events(s.alive_count_change, s.not_alive_count_change);
 }
 template<typename Status>
 size_t pending_events(const Status & s) {return static_cast<size_t>(s.total_count_change);}
 
-enum class Read { failed, unchanged, changed };
+// The events a read added, or nullopt if zzdds's status could not be read.
+using Read = std::optional<size_t>;
 
 template<typename Status, typename Entity>
 Read read_into(
   Status & stored, Entity entity, DDS_ReturnCode_t (* get)(Entity, Status *))
 {
   Status now{};
-  if (get(entity, &now) != DDS_RETCODE_OK) {return Read::failed;}
-  return add_changes(stored, now) ? Read::changed : Read::unchanged;
+  if (get(entity, &now) != DDS_RETCODE_OK) {return std::nullopt;}
+  return add_changes(stored, now);
 }
 
 template<typename Entity>
@@ -199,10 +221,10 @@ Read read_into(
   DDS_ReturnCode_t (* get)(Entity, DDS_OfferedIncompatibleQosStatus *))
 {
   DDS_OfferedIncompatibleQosStatus now{};
-  if (get(entity, &now) != DDS_RETCODE_OK) {return Read::failed;}
-  const bool changed = add_changes(stored, now);
+  if (get(entity, &now) != DDS_RETCODE_OK) {return std::nullopt;}
+  const size_t events = add_changes(stored, now);
   DDS_QosPolicyCountSeq_free(&now.policies);
-  return changed ? Read::changed : Read::unchanged;
+  return events;
 }
 
 template<typename Entity>
@@ -211,10 +233,10 @@ Read read_into(
   DDS_ReturnCode_t (* get)(Entity, DDS_RequestedIncompatibleQosStatus *))
 {
   DDS_RequestedIncompatibleQosStatus now{};
-  if (get(entity, &now) != DDS_RETCODE_OK) {return Read::failed;}
-  const bool changed = add_changes(stored, now);
+  if (get(entity, &now) != DDS_RETCODE_OK) {return std::nullopt;}
+  const size_t events = add_changes(stored, now);
   DDS_QosPolicyCountSeq_free(&now.policies);
-  return changed ? Read::changed : Read::unchanged;
+  return events;
 }
 
 // Calls `visit(stored_status)` for `type`'s stored status on impl.
@@ -285,21 +307,25 @@ Read read_status(SubscriptionImpl * impl, rmw_event_type_t type)
 }
 
 // A zzdds listener for `type` fired: read the status and, if it changed,
-// trigger the event and call its callback. The status zzdds passes is not
-// used: listeners can run concurrently, so it may be older than the stored one.
+// trigger the event and tell its callback how many events were added. The
+// status zzdds passes is not used: listeners can run concurrently, so it may be
+// older than the stored one.
 template<typename Impl>
 void on_status(Impl * impl, rmw_event_type_t type)
 {
   rmw_event_callback_t callback = nullptr;
   const void * user_data = nullptr;
+  size_t events = 0U;
   {
     const std::lock_guard<std::mutex> lock(impl->event_mutex);
-    if (read_status(impl, type) != Read::changed) {return;}
+    events = read_status(impl, type).value_or(0U);
+    if (events == 0U) {return;}
+    (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[type], true);
     callback = impl->event_callbacks[type];
     user_data = impl->event_user_data[type];
-    (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[type], true);
+    if (callback != nullptr) {impl->event_reported[type] += events;}
   }
-  if (callback != nullptr) {callback(user_data, 1U);}
+  if (callback != nullptr) {callback(user_data, events);}
 }
 
 void publication_matched_listener(DDS_DataWriter, const DDS_PublicationMatchedStatus *, void * data)
@@ -346,22 +372,29 @@ void requested_incompatible_qos_listener(
 
 // A callback was registered or cleared for `type`, its listener already
 // (re)installed: read the status, keep the event triggered while changes are
-// untaken, and report changes from before registration to the new callback.
+// untaken, and tell a new callback about untaken events no callback has been
+// told about yet.
 template<typename Impl>
 void after_set_callback(Impl * impl, rmw_event_type_t type)
 {
   rmw_event_callback_t callback = nullptr;
   const void * user_data = nullptr;
-  size_t events = 0U;
+  size_t unreported = 0U;
   {
     const std::lock_guard<std::mutex> lock(impl->event_mutex);
     (void)read_status(impl, type);
-    events = visit_status(impl, type, [](const auto & s) {return pending_events(s);});
-    (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[type], events != 0U);
+    const size_t pending =
+      visit_status(impl, type, [](const auto & s) {return pending_events(s);});
+    (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[type], pending != 0U);
     callback = impl->event_callbacks[type];
     user_data = impl->event_user_data[type];
+    if (callback != nullptr) {
+      const size_t reported = impl->event_reported[type];
+      unreported = pending > reported ? pending - reported : 0U;
+      impl->event_reported[type] = pending;
+    }
   }
-  if (callback != nullptr && events != 0U) {callback(user_data, events);}
+  if (unreported != 0U) {callback(user_data, unreported);}
 }
 
 // Not gated by any rmw_event_type_t/DDS_StatusMask -- zzdds dispatches this
@@ -549,7 +582,7 @@ rmw_ret_t rmw_take_event(const rmw_event_t * event, void * event_info, bool * ta
   if (publisher_event(event->event_type)) {
     auto * impl = static_cast<PublisherImpl *>(event->data);
     const std::lock_guard<std::mutex> lock(impl->event_mutex);
-    if (read_status(impl, event->event_type) == Read::failed) {return RMW_RET_ERROR;}
+    if (!read_status(impl, event->event_type)) {return RMW_RET_ERROR;}
     switch (event->event_type) {
       case RMW_EVENT_PUBLICATION_MATCHED: {
           auto & status = impl->publication_matched;
@@ -588,11 +621,12 @@ rmw_ret_t rmw_take_event(const rmw_event_t * event, void * event_info, bool * ta
           break;
         }
     }
+    impl->event_reported[event->event_type] = 0U;
     (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event->event_type], false);
   } else if (subscription_event(event->event_type)) {
     auto * impl = static_cast<SubscriptionImpl *>(event->data);
     const std::lock_guard<std::mutex> lock(impl->event_mutex);
-    if (read_status(impl, event->event_type) == Read::failed) {return RMW_RET_ERROR;}
+    if (!read_status(impl, event->event_type)) {return RMW_RET_ERROR;}
     switch (event->event_type) {
       case RMW_EVENT_SUBSCRIPTION_MATCHED: {
           auto & status = impl->subscription_matched;
@@ -642,6 +676,7 @@ rmw_ret_t rmw_take_event(const rmw_event_t * event, void * event_info, bool * ta
           break;
         }
     }
+    impl->event_reported[event->event_type] = 0U;
     (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event->event_type], false);
   } else {
     return RMW_RET_UNSUPPORTED;
