@@ -1,3 +1,6 @@
+#include <cstddef>
+#include <cstdlib>
+
 #include "rmw/error_handling.h"
 #include "rmw/events_statuses/matched.h"
 #include "rmw/events_statuses/liveliness_changed.h"
@@ -58,154 +61,308 @@ rmw_qos_policy_kind_t qos_policy(DDS_QosPolicyId_t id)
   }
 }
 
-void publication_matched_listener(
-  DDS_DataWriter, const DDS_PublicationMatchedStatus * status, void * data)
+// Each rmw event keeps its endpoint's zzdds status in PublisherImpl/
+// SubscriptionImpl (publication_matched, ...), its *_change fields holding the
+// changes not yet taken. read_status reads zzdds's current status and adds what
+// changed since the stored one, computed from the counts rather than taken
+// from zzdds's own *_change fields. Every path that reads a status -- the
+// listener, rmw_take_event and rmw_event_set_callback -- goes through it,
+// under event_mutex, so each read sees state at least as new as the one before
+// and every change is counted exactly once, whether or not a callback was
+// registered at the time. Reading zzdds under event_mutex cannot deadlock
+// against a listener: zzdds calls no listener while holding its own locks.
+bool add_changes(DDS_PublicationMatchedStatus & stored, const DDS_PublicationMatchedStatus & now)
 {
-  auto * impl = static_cast<PublisherImpl *>(data);
+  const int32_t total = now.total_count - stored.total_count;
+  const int32_t current = now.current_count - stored.current_count;
+  stored.total_count_change += total;
+  stored.current_count_change += current;
+  stored.total_count = now.total_count;
+  stored.current_count = now.current_count;
+  stored.last_subscription_handle = now.last_subscription_handle;
+  return total != 0 || current != 0;
+}
+
+bool add_changes(DDS_SubscriptionMatchedStatus & stored, const DDS_SubscriptionMatchedStatus & now)
+{
+  const int32_t total = now.total_count - stored.total_count;
+  const int32_t current = now.current_count - stored.current_count;
+  stored.total_count_change += total;
+  stored.current_count_change += current;
+  stored.total_count = now.total_count;
+  stored.current_count = now.current_count;
+  stored.last_publication_handle = now.last_publication_handle;
+  return total != 0 || current != 0;
+}
+
+bool add_changes(DDS_LivelinessChangedStatus & stored, const DDS_LivelinessChangedStatus & now)
+{
+  const int32_t alive = now.alive_count - stored.alive_count;
+  const int32_t not_alive = now.not_alive_count - stored.not_alive_count;
+  stored.alive_count_change += alive;
+  stored.not_alive_count_change += not_alive;
+  stored.alive_count = now.alive_count;
+  stored.not_alive_count = now.not_alive_count;
+  stored.last_publication_handle = now.last_publication_handle;
+  return alive != 0 || not_alive != 0;
+}
+
+// Statuses that only count occurrences, plus the last-occurrence field some
+// carry (copied when the count moves).
+template<typename Status>
+bool add_count_changes(Status & stored, const Status & now)
+{
+  const int32_t total = now.total_count - stored.total_count;
+  stored.total_count_change += total;
+  stored.total_count = now.total_count;
+  return total != 0;
+}
+bool add_changes(DDS_LivelinessLostStatus & stored, const DDS_LivelinessLostStatus & now)
+{
+  return add_count_changes(stored, now);
+}
+bool add_changes(DDS_SampleLostStatus & stored, const DDS_SampleLostStatus & now)
+{
+  return add_count_changes(stored, now);
+}
+template<typename Status>
+bool add_deadline_changes(Status & stored, const Status & now)
+{
+  if (!add_count_changes(stored, now)) {return false;}
+  stored.last_instance_handle = now.last_instance_handle;
+  return true;
+}
+bool add_changes(
+  DDS_OfferedDeadlineMissedStatus & stored, const DDS_OfferedDeadlineMissedStatus & now)
+{
+  return add_deadline_changes(stored, now);
+}
+bool add_changes(
+  DDS_RequestedDeadlineMissedStatus & stored, const DDS_RequestedDeadlineMissedStatus & now)
+{
+  return add_deadline_changes(stored, now);
+}
+// The policies sequence is not kept: rmw reports only the last policy.
+template<typename Status>
+bool add_incompatible_qos_changes(Status & stored, const Status & now)
+{
+  if (!add_count_changes(stored, now)) {return false;}
+  stored.last_policy_id = now.last_policy_id;
+  return true;
+}
+bool add_changes(
+  DDS_OfferedIncompatibleQosStatus & stored, const DDS_OfferedIncompatibleQosStatus & now)
+{
+  return add_incompatible_qos_changes(stored, now);
+}
+bool add_changes(
+  DDS_RequestedIncompatibleQosStatus & stored, const DDS_RequestedIncompatibleQosStatus & now)
+{
+  return add_incompatible_qos_changes(stored, now);
+}
+
+// Number of events in a stored status's untaken changes (for a callback
+// registered after they happened).
+size_t pending_events(const DDS_PublicationMatchedStatus & s)
+{
+  // Matches raise total_count; unmatches lower current_count only.
+  return static_cast<size_t>(s.total_count_change) +
+         static_cast<size_t>(s.total_count_change - s.current_count_change);
+}
+size_t pending_events(const DDS_SubscriptionMatchedStatus & s)
+{
+  return static_cast<size_t>(s.total_count_change) +
+         static_cast<size_t>(s.total_count_change - s.current_count_change);
+}
+size_t pending_events(const DDS_LivelinessChangedStatus & s)
+{
+  return static_cast<size_t>(std::abs(s.alive_count_change)) +
+         static_cast<size_t>(std::abs(s.not_alive_count_change));
+}
+template<typename Status>
+size_t pending_events(const Status & s) {return static_cast<size_t>(s.total_count_change);}
+
+enum class Read { failed, unchanged, changed };
+
+template<typename Status, typename Entity>
+Read read_into(
+  Status & stored, Entity entity, DDS_ReturnCode_t (* get)(Entity, Status *))
+{
+  Status now{};
+  if (get(entity, &now) != DDS_RETCODE_OK) {return Read::failed;}
+  return add_changes(stored, now) ? Read::changed : Read::unchanged;
+}
+
+template<typename Entity>
+Read read_into(
+  DDS_OfferedIncompatibleQosStatus & stored, Entity entity,
+  DDS_ReturnCode_t (* get)(Entity, DDS_OfferedIncompatibleQosStatus *))
+{
+  DDS_OfferedIncompatibleQosStatus now{};
+  if (get(entity, &now) != DDS_RETCODE_OK) {return Read::failed;}
+  const bool changed = add_changes(stored, now);
+  DDS_QosPolicyCountSeq_free(&now.policies);
+  return changed ? Read::changed : Read::unchanged;
+}
+
+template<typename Entity>
+Read read_into(
+  DDS_RequestedIncompatibleQosStatus & stored, Entity entity,
+  DDS_ReturnCode_t (* get)(Entity, DDS_RequestedIncompatibleQosStatus *))
+{
+  DDS_RequestedIncompatibleQosStatus now{};
+  if (get(entity, &now) != DDS_RETCODE_OK) {return Read::failed;}
+  const bool changed = add_changes(stored, now);
+  DDS_QosPolicyCountSeq_free(&now.policies);
+  return changed ? Read::changed : Read::unchanged;
+}
+
+// Calls `visit(stored_status)` for `type`'s stored status on impl.
+template<typename Visit>
+auto visit_status(PublisherImpl * impl, rmw_event_type_t type, Visit && visit)
+{
+  switch (type) {
+    case RMW_EVENT_PUBLICATION_MATCHED: return visit(impl->publication_matched);
+    case RMW_EVENT_LIVELINESS_LOST: return visit(impl->liveliness_lost);
+    case RMW_EVENT_OFFERED_DEADLINE_MISSED: return visit(impl->offered_deadline_missed);
+    default: return visit(impl->offered_incompatible_qos);
+  }
+}
+
+template<typename Visit>
+auto visit_status(SubscriptionImpl * impl, rmw_event_type_t type, Visit && visit)
+{
+  switch (type) {
+    case RMW_EVENT_SUBSCRIPTION_MATCHED: return visit(impl->subscription_matched);
+    case RMW_EVENT_LIVELINESS_CHANGED: return visit(impl->liveliness_changed);
+    case RMW_EVENT_REQUESTED_DEADLINE_MISSED: return visit(impl->requested_deadline_missed);
+    case RMW_EVENT_MESSAGE_LOST: return visit(impl->sample_lost);
+    default: return visit(impl->requested_incompatible_qos);
+  }
+}
+
+// See the comment above add_changes. Caller holds impl->event_mutex.
+Read read_status(PublisherImpl * impl, rmw_event_type_t type)
+{
+  switch (type) {
+    case RMW_EVENT_PUBLICATION_MATCHED:
+      return read_into(
+        impl->publication_matched, impl->writer, DDS_DataWriter_get_publication_matched_status);
+    case RMW_EVENT_LIVELINESS_LOST:
+      return read_into(
+        impl->liveliness_lost, impl->writer, DDS_DataWriter_get_liveliness_lost_status);
+    case RMW_EVENT_OFFERED_DEADLINE_MISSED:
+      return read_into(
+        impl->offered_deadline_missed, impl->writer,
+        DDS_DataWriter_get_offered_deadline_missed_status);
+    default:
+      return read_into(
+        impl->offered_incompatible_qos, impl->writer,
+        DDS_DataWriter_get_offered_incompatible_qos_status);
+  }
+}
+
+Read read_status(SubscriptionImpl * impl, rmw_event_type_t type)
+{
+  switch (type) {
+    case RMW_EVENT_SUBSCRIPTION_MATCHED:
+      return read_into(
+        impl->subscription_matched, impl->reader, DDS_DataReader_get_subscription_matched_status);
+    case RMW_EVENT_LIVELINESS_CHANGED:
+      return read_into(
+        impl->liveliness_changed, impl->reader, DDS_DataReader_get_liveliness_changed_status);
+    case RMW_EVENT_REQUESTED_DEADLINE_MISSED:
+      return read_into(
+        impl->requested_deadline_missed, impl->reader,
+        DDS_DataReader_get_requested_deadline_missed_status);
+    case RMW_EVENT_MESSAGE_LOST:
+      return read_into(impl->sample_lost, impl->reader, DDS_DataReader_get_sample_lost_status);
+    default:
+      return read_into(
+        impl->requested_incompatible_qos, impl->reader,
+        DDS_DataReader_get_requested_incompatible_qos_status);
+  }
+}
+
+// A zzdds listener for `type` fired: read the status and, if it changed,
+// trigger the event and call its callback. The status zzdds passes is not
+// used: listeners can run concurrently, so it may be older than the stored one.
+template<typename Impl>
+void on_status(Impl * impl, rmw_event_type_t type)
+{
   rmw_event_callback_t callback = nullptr;
   const void * user_data = nullptr;
   {
     const std::lock_guard<std::mutex> lock(impl->event_mutex);
-    impl->publication_matched.total_count = status->total_count;
-    impl->publication_matched.total_count_change += status->total_count_change;
-    impl->publication_matched.current_count = status->current_count;
-    impl->publication_matched.current_count_change += status->current_count_change;
-    impl->publication_matched_pending = true;
-    callback = impl->event_callbacks[RMW_EVENT_PUBLICATION_MATCHED];
-    user_data = impl->event_user_data[RMW_EVENT_PUBLICATION_MATCHED];
-    (void)DDS_GuardCondition_set_trigger_value(
-      impl->event_guards[RMW_EVENT_PUBLICATION_MATCHED], true);
+    if (read_status(impl, type) != Read::changed) {return;}
+    callback = impl->event_callbacks[type];
+    user_data = impl->event_user_data[type];
+    (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[type], true);
   }
   if (callback != nullptr) {callback(user_data, 1U);}
 }
 
-void subscription_matched_listener(
-  DDS_DataReader, const DDS_SubscriptionMatchedStatus * status, void * data)
+void publication_matched_listener(DDS_DataWriter, const DDS_PublicationMatchedStatus *, void * data)
 {
-  auto * impl = static_cast<SubscriptionImpl *>(data);
-  rmw_event_callback_t callback = nullptr;
-  const void * user_data = nullptr;
-  {
-    const std::lock_guard<std::mutex> lock(impl->event_mutex);
-    impl->subscription_matched.total_count = status->total_count;
-    impl->subscription_matched.total_count_change += status->total_count_change;
-    impl->subscription_matched.current_count = status->current_count;
-    impl->subscription_matched.current_count_change += status->current_count_change;
-    impl->subscription_matched_pending = true;
-    callback = impl->event_callbacks[RMW_EVENT_SUBSCRIPTION_MATCHED];
-    user_data = impl->event_user_data[RMW_EVENT_SUBSCRIPTION_MATCHED];
-    (void)DDS_GuardCondition_set_trigger_value(
-      impl->event_guards[RMW_EVENT_SUBSCRIPTION_MATCHED], true);
-  }
-  if (callback != nullptr) {callback(user_data, 1U);}
+  on_status(static_cast<PublisherImpl *>(data), RMW_EVENT_PUBLICATION_MATCHED);
 }
-
-void liveliness_changed_listener(
-  DDS_DataReader, const DDS_LivelinessChangedStatus * status, void * data)
+void liveliness_lost_listener(DDS_DataWriter, const DDS_LivelinessLostStatus *, void * data)
 {
-  auto * impl = static_cast<SubscriptionImpl *>(data);
-  rmw_event_callback_t callback = nullptr;
-  const void * user_data = nullptr;
-  {
-    const std::lock_guard<std::mutex> lock(impl->event_mutex);
-    impl->liveliness_changed.alive_count = status->alive_count;
-    impl->liveliness_changed.not_alive_count = status->not_alive_count;
-    impl->liveliness_changed.alive_count_change += status->alive_count_change;
-    impl->liveliness_changed.not_alive_count_change += status->not_alive_count_change;
-    impl->liveliness_changed_pending = true;
-    callback = impl->event_callbacks[RMW_EVENT_LIVELINESS_CHANGED];
-    user_data = impl->event_user_data[RMW_EVENT_LIVELINESS_CHANGED];
-    (void)DDS_GuardCondition_set_trigger_value(
-      impl->event_guards[RMW_EVENT_LIVELINESS_CHANGED], true);
-  }
-  if (callback != nullptr) {callback(user_data, 1U);}
+  on_status(static_cast<PublisherImpl *>(data), RMW_EVENT_LIVELINESS_LOST);
 }
-
-#define RMW_ZZDDS_PUBLISHER_COUNT_LISTENER(name, event_kind, field) \
-  void name(DDS_DataWriter, const decltype(PublisherImpl::field) * status, void * data) \
-  { \
-    auto * impl = static_cast<PublisherImpl *>(data); \
-    rmw_event_callback_t callback = nullptr; \
-    const void * user_data = nullptr; \
-    { \
-      const std::lock_guard<std::mutex> lock(impl->event_mutex); \
-      impl->field.total_count = status->total_count; \
-      impl->field.total_count_change += status->total_count_change; \
-      callback = impl->event_callbacks[event_kind]; \
-      user_data = impl->event_user_data[event_kind]; \
-      (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event_kind], true); \
-    } \
-    if (callback != nullptr) {callback(user_data, 1U);} \
-  }
-
-RMW_ZZDDS_PUBLISHER_COUNT_LISTENER(
-  liveliness_lost_listener, RMW_EVENT_LIVELINESS_LOST, liveliness_lost)
-RMW_ZZDDS_PUBLISHER_COUNT_LISTENER(
-  offered_deadline_listener, RMW_EVENT_OFFERED_DEADLINE_MISSED, offered_deadline_missed)
-
+void offered_deadline_listener(
+  DDS_DataWriter, const DDS_OfferedDeadlineMissedStatus *, void * data)
+{
+  on_status(static_cast<PublisherImpl *>(data), RMW_EVENT_OFFERED_DEADLINE_MISSED);
+}
 void offered_incompatible_qos_listener(
-  DDS_DataWriter, const DDS_OfferedIncompatibleQosStatus * status, void * data)
+  DDS_DataWriter, const DDS_OfferedIncompatibleQosStatus *, void * data)
 {
-  auto * impl = static_cast<PublisherImpl *>(data);
-  rmw_event_callback_t callback = nullptr;
-  const void * user_data = nullptr;
-  {
-    const std::lock_guard<std::mutex> lock(impl->event_mutex);
-    impl->offered_incompatible_qos.total_count = status->total_count;
-    impl->offered_incompatible_qos.total_count_change += status->total_count_change;
-    impl->offered_incompatible_qos.last_policy_id = status->last_policy_id;
-    callback = impl->event_callbacks[RMW_EVENT_OFFERED_QOS_INCOMPATIBLE];
-    user_data = impl->event_user_data[RMW_EVENT_OFFERED_QOS_INCOMPATIBLE];
-    (void)DDS_GuardCondition_set_trigger_value(
-      impl->event_guards[RMW_EVENT_OFFERED_QOS_INCOMPATIBLE], true);
-  }
-  if (callback != nullptr) {callback(user_data, 1U);}
+  on_status(static_cast<PublisherImpl *>(data), RMW_EVENT_OFFERED_QOS_INCOMPATIBLE);
 }
-
-#define RMW_ZZDDS_SUBSCRIPTION_COUNT_LISTENER(name, status_type, event_kind, field) \
-  void name(DDS_DataReader, const status_type * status, void * data) \
-  { \
-    auto * impl = static_cast<SubscriptionImpl *>(data); \
-    rmw_event_callback_t callback = nullptr; \
-    const void * user_data = nullptr; \
-    { \
-      const std::lock_guard<std::mutex> lock(impl->event_mutex); \
-      impl->field.total_count = status->total_count; \
-      impl->field.total_count_change += status->total_count_change; \
-      callback = impl->event_callbacks[event_kind]; \
-      user_data = impl->event_user_data[event_kind]; \
-      (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event_kind], true); \
-    } \
-    if (callback != nullptr) {callback(user_data, 1U);} \
-  }
-
-RMW_ZZDDS_SUBSCRIPTION_COUNT_LISTENER(
-  requested_deadline_listener, DDS_RequestedDeadlineMissedStatus,
-  RMW_EVENT_REQUESTED_DEADLINE_MISSED, requested_deadline_missed)
-RMW_ZZDDS_SUBSCRIPTION_COUNT_LISTENER(
-  sample_lost_listener, DDS_SampleLostStatus, RMW_EVENT_MESSAGE_LOST, sample_lost)
-
+void subscription_matched_listener(
+  DDS_DataReader, const DDS_SubscriptionMatchedStatus *, void * data)
+{
+  on_status(static_cast<SubscriptionImpl *>(data), RMW_EVENT_SUBSCRIPTION_MATCHED);
+}
+void liveliness_changed_listener(DDS_DataReader, const DDS_LivelinessChangedStatus *, void * data)
+{
+  on_status(static_cast<SubscriptionImpl *>(data), RMW_EVENT_LIVELINESS_CHANGED);
+}
+void requested_deadline_listener(
+  DDS_DataReader, const DDS_RequestedDeadlineMissedStatus *, void * data)
+{
+  on_status(static_cast<SubscriptionImpl *>(data), RMW_EVENT_REQUESTED_DEADLINE_MISSED);
+}
+void sample_lost_listener(DDS_DataReader, const DDS_SampleLostStatus *, void * data)
+{
+  on_status(static_cast<SubscriptionImpl *>(data), RMW_EVENT_MESSAGE_LOST);
+}
 void requested_incompatible_qos_listener(
-  DDS_DataReader, const DDS_RequestedIncompatibleQosStatus * status, void * data)
+  DDS_DataReader, const DDS_RequestedIncompatibleQosStatus *, void * data)
 {
-  auto * impl = static_cast<SubscriptionImpl *>(data);
-  rmw_event_callback_t callback = nullptr;
-  const void * user_data = nullptr;
-  {
-    const std::lock_guard<std::mutex> lock(impl->event_mutex);
-    impl->requested_incompatible_qos.total_count = status->total_count;
-    impl->requested_incompatible_qos.total_count_change += status->total_count_change;
-    impl->requested_incompatible_qos.last_policy_id = status->last_policy_id;
-    callback = impl->event_callbacks[RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE];
-    user_data = impl->event_user_data[RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE];
-    (void)DDS_GuardCondition_set_trigger_value(
-      impl->event_guards[RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE], true);
-  }
-  if (callback != nullptr) {callback(user_data, 1U);}
+  on_status(static_cast<SubscriptionImpl *>(data), RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE);
 }
 
-#undef RMW_ZZDDS_PUBLISHER_COUNT_LISTENER
-#undef RMW_ZZDDS_SUBSCRIPTION_COUNT_LISTENER
+// A callback was registered or cleared for `type`, its listener already
+// (re)installed: read the status, keep the event triggered while changes are
+// untaken, and report changes from before registration to the new callback.
+template<typename Impl>
+void after_set_callback(Impl * impl, rmw_event_type_t type)
+{
+  rmw_event_callback_t callback = nullptr;
+  const void * user_data = nullptr;
+  size_t events = 0U;
+  {
+    const std::lock_guard<std::mutex> lock(impl->event_mutex);
+    (void)read_status(impl, type);
+    events = visit_status(impl, type, [](const auto & s) {return pending_events(s);});
+    (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[type], events != 0U);
+    callback = impl->event_callbacks[type];
+    user_data = impl->event_user_data[type];
+  }
+  if (callback != nullptr && events != 0U) {callback(user_data, events);}
+}
 
 // Not gated by any rmw_event_type_t/DDS_StatusMask -- zzdds dispatches this
 // zzdds::DataReaderListenerEx extension callback unconditionally (see
@@ -263,14 +420,18 @@ DDS_Condition event_condition(const rmw_event_t * event)
   if (publisher_event(event->event_type)) {
     auto * impl = static_cast<PublisherImpl *>(event->data);
     const std::lock_guard<std::mutex> lock(impl->event_mutex);
-    if (impl->event_callbacks[event->event_type] != nullptr) {
+    if (impl->event_callbacks[event->event_type] != nullptr ||
+      visit_status(impl, event->event_type, [](const auto & s) {return pending_events(s);}) != 0U)
+    {
       return DDS_GuardCondition_as_DDS_Condition(impl->event_guards[event->event_type]);
     }
     return DDS_StatusCondition_as_DDS_Condition(DDS_DataWriter_get_statuscondition(impl->writer));
   }
   auto * impl = static_cast<SubscriptionImpl *>(event->data);
   const std::lock_guard<std::mutex> lock(impl->event_mutex);
-  if (impl->event_callbacks[event->event_type] != nullptr) {
+  if (impl->event_callbacks[event->event_type] != nullptr ||
+    visit_status(impl, event->event_type, [](const auto & s) {return pending_events(s);}) != 0U)
+  {
     return DDS_GuardCondition_as_DDS_Condition(impl->event_guards[event->event_type]);
   }
   return DDS_StatusCondition_as_DDS_Condition(DDS_DataReader_get_statuscondition(impl->reader));
@@ -385,181 +546,103 @@ rmw_ret_t rmw_take_event(const rmw_event_t * event, void * event_info, bool * ta
     return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
   }
   *taken = false;
-  auto * output = static_cast<rmw_matched_status_t *>(event_info);
-  if (event->event_type == RMW_EVENT_PUBLICATION_MATCHED) {
-    DDS_PublicationMatchedStatus status{};
+  if (publisher_event(event->event_type)) {
     auto * impl = static_cast<PublisherImpl *>(event->data);
-    {
-      const std::lock_guard<std::mutex> lock(impl->event_mutex);
-      if (impl->event_callbacks[event->event_type] != nullptr) {
-        status = impl->publication_matched;
-        impl->publication_matched.total_count_change = 0;
-        impl->publication_matched.current_count_change = 0;
-        impl->publication_matched_pending = false;
-        (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event->event_type], false);
-      } else if (DDS_DataWriter_get_publication_matched_status(
-          impl->writer, &status) != DDS_RETCODE_OK)
-      {
-        return RMW_RET_ERROR;
-      }
+    const std::lock_guard<std::mutex> lock(impl->event_mutex);
+    if (read_status(impl, event->event_type) == Read::failed) {return RMW_RET_ERROR;}
+    switch (event->event_type) {
+      case RMW_EVENT_PUBLICATION_MATCHED: {
+          auto & status = impl->publication_matched;
+          auto * output = static_cast<rmw_matched_status_t *>(event_info);
+          output->total_count = static_cast<size_t>(status.total_count);
+          output->total_count_change = static_cast<size_t>(status.total_count_change);
+          output->current_count = static_cast<size_t>(status.current_count);
+          output->current_count_change = status.current_count_change;
+          status.total_count_change = 0;
+          status.current_count_change = 0;
+          break;
+        }
+      case RMW_EVENT_LIVELINESS_LOST: {
+          auto & status = impl->liveliness_lost;
+          auto * output = static_cast<rmw_liveliness_lost_status_t *>(event_info);
+          output->total_count = status.total_count;
+          output->total_count_change = status.total_count_change;
+          status.total_count_change = 0;
+          break;
+        }
+      case RMW_EVENT_OFFERED_DEADLINE_MISSED: {
+          auto & status = impl->offered_deadline_missed;
+          auto * output = static_cast<rmw_offered_deadline_missed_status_t *>(event_info);
+          output->total_count = status.total_count;
+          output->total_count_change = status.total_count_change;
+          status.total_count_change = 0;
+          break;
+        }
+      default: {
+          auto & status = impl->offered_incompatible_qos;
+          auto * output = static_cast<rmw_offered_qos_incompatible_event_status_t *>(event_info);
+          output->total_count = status.total_count;
+          output->total_count_change = status.total_count_change;
+          output->last_policy_kind = qos_policy(status.last_policy_id);
+          status.total_count_change = 0;
+          break;
+        }
     }
-    output->total_count = static_cast<size_t>(status.total_count);
-    output->total_count_change = static_cast<size_t>(status.total_count_change);
-    output->current_count = static_cast<size_t>(status.current_count);
-    output->current_count_change = status.current_count_change;
-  } else if (event->event_type == RMW_EVENT_SUBSCRIPTION_MATCHED) {
-    DDS_SubscriptionMatchedStatus status{};
+    (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event->event_type], false);
+  } else if (subscription_event(event->event_type)) {
     auto * impl = static_cast<SubscriptionImpl *>(event->data);
-    {
-      const std::lock_guard<std::mutex> lock(impl->event_mutex);
-      if (impl->event_callbacks[event->event_type] != nullptr) {
-        status = impl->subscription_matched;
-        impl->subscription_matched.total_count_change = 0;
-        impl->subscription_matched.current_count_change = 0;
-        impl->subscription_matched_pending = false;
-        (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event->event_type], false);
-      } else if (DDS_DataReader_get_subscription_matched_status(
-          impl->reader, &status) != DDS_RETCODE_OK)
-      {
-        return RMW_RET_ERROR;
-      }
+    const std::lock_guard<std::mutex> lock(impl->event_mutex);
+    if (read_status(impl, event->event_type) == Read::failed) {return RMW_RET_ERROR;}
+    switch (event->event_type) {
+      case RMW_EVENT_SUBSCRIPTION_MATCHED: {
+          auto & status = impl->subscription_matched;
+          auto * output = static_cast<rmw_matched_status_t *>(event_info);
+          output->total_count = static_cast<size_t>(status.total_count);
+          output->total_count_change = static_cast<size_t>(status.total_count_change);
+          output->current_count = static_cast<size_t>(status.current_count);
+          output->current_count_change = status.current_count_change;
+          status.total_count_change = 0;
+          status.current_count_change = 0;
+          break;
+        }
+      case RMW_EVENT_LIVELINESS_CHANGED: {
+          auto & status = impl->liveliness_changed;
+          auto * output = static_cast<rmw_liveliness_changed_status_t *>(event_info);
+          output->alive_count = status.alive_count;
+          output->not_alive_count = status.not_alive_count;
+          output->alive_count_change = status.alive_count_change;
+          output->not_alive_count_change = status.not_alive_count_change;
+          status.alive_count_change = 0;
+          status.not_alive_count_change = 0;
+          break;
+        }
+      case RMW_EVENT_REQUESTED_DEADLINE_MISSED: {
+          auto & status = impl->requested_deadline_missed;
+          auto * output = static_cast<rmw_requested_deadline_missed_status_t *>(event_info);
+          output->total_count = status.total_count;
+          output->total_count_change = status.total_count_change;
+          status.total_count_change = 0;
+          break;
+        }
+      case RMW_EVENT_MESSAGE_LOST: {
+          auto & status = impl->sample_lost;
+          auto * output = static_cast<rmw_message_lost_status_t *>(event_info);
+          output->total_count = static_cast<size_t>(status.total_count);
+          output->total_count_change = static_cast<size_t>(status.total_count_change);
+          status.total_count_change = 0;
+          break;
+        }
+      default: {
+          auto & status = impl->requested_incompatible_qos;
+          auto * output = static_cast<rmw_requested_qos_incompatible_event_status_t *>(event_info);
+          output->total_count = status.total_count;
+          output->total_count_change = status.total_count_change;
+          output->last_policy_kind = qos_policy(status.last_policy_id);
+          status.total_count_change = 0;
+          break;
+        }
     }
-    output->total_count = static_cast<size_t>(status.total_count);
-    output->total_count_change = static_cast<size_t>(status.total_count_change);
-    output->current_count = static_cast<size_t>(status.current_count);
-    output->current_count_change = status.current_count_change;
-  } else if (event->event_type == RMW_EVENT_LIVELINESS_CHANGED) {
-    DDS_LivelinessChangedStatus status{};
-    auto * impl = static_cast<SubscriptionImpl *>(event->data);
-    {
-      const std::lock_guard<std::mutex> lock(impl->event_mutex);
-      if (impl->event_callbacks[event->event_type] != nullptr) {
-        status = impl->liveliness_changed;
-        impl->liveliness_changed.alive_count_change = 0;
-        impl->liveliness_changed.not_alive_count_change = 0;
-        impl->liveliness_changed_pending = false;
-        (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event->event_type], false);
-      } else if (DDS_DataReader_get_liveliness_changed_status(
-          impl->reader, &status) != DDS_RETCODE_OK)
-      {
-        return RMW_RET_ERROR;
-      }
-    }
-    auto * liveliness = static_cast<rmw_liveliness_changed_status_t *>(event_info);
-    liveliness->alive_count = status.alive_count;
-    liveliness->not_alive_count = status.not_alive_count;
-    liveliness->alive_count_change = status.alive_count_change;
-    liveliness->not_alive_count_change = status.not_alive_count_change;
-  } else if (event->event_type == RMW_EVENT_LIVELINESS_LOST) {
-    auto * impl = static_cast<PublisherImpl *>(event->data);
-    DDS_LivelinessLostStatus status{};
-    {
-      const std::lock_guard<std::mutex> lock(impl->event_mutex);
-      if (impl->event_callbacks[event->event_type] != nullptr) {
-        status = impl->liveliness_lost;
-        impl->liveliness_lost.total_count_change = 0;
-        (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event->event_type], false);
-      } else if (DDS_DataWriter_get_liveliness_lost_status(impl->writer, &status) != DDS_RETCODE_OK) {
-        return RMW_RET_ERROR;
-      }
-    }
-    auto * result = static_cast<rmw_liveliness_lost_status_t *>(event_info);
-    result->total_count = status.total_count;
-    result->total_count_change = status.total_count_change;
-  } else if (event->event_type == RMW_EVENT_OFFERED_DEADLINE_MISSED) {
-    auto * impl = static_cast<PublisherImpl *>(event->data);
-    DDS_OfferedDeadlineMissedStatus status{};
-    {
-      const std::lock_guard<std::mutex> lock(impl->event_mutex);
-      if (impl->event_callbacks[event->event_type] != nullptr) {
-        status = impl->offered_deadline_missed;
-        impl->offered_deadline_missed.total_count_change = 0;
-        (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event->event_type], false);
-      } else if (DDS_DataWriter_get_offered_deadline_missed_status(
-          impl->writer, &status) != DDS_RETCODE_OK)
-      {
-        return RMW_RET_ERROR;
-      }
-    }
-    auto * result = static_cast<rmw_offered_deadline_missed_status_t *>(event_info);
-    result->total_count = status.total_count;
-    result->total_count_change = status.total_count_change;
-  } else if (event->event_type == RMW_EVENT_REQUESTED_DEADLINE_MISSED) {
-    auto * impl = static_cast<SubscriptionImpl *>(event->data);
-    DDS_RequestedDeadlineMissedStatus status{};
-    {
-      const std::lock_guard<std::mutex> lock(impl->event_mutex);
-      if (impl->event_callbacks[event->event_type] != nullptr) {
-        status = impl->requested_deadline_missed;
-        impl->requested_deadline_missed.total_count_change = 0;
-        (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event->event_type], false);
-      } else if (DDS_DataReader_get_requested_deadline_missed_status(
-          impl->reader, &status) != DDS_RETCODE_OK)
-      {
-        return RMW_RET_ERROR;
-      }
-    }
-    auto * result = static_cast<rmw_requested_deadline_missed_status_t *>(event_info);
-    result->total_count = status.total_count;
-    result->total_count_change = status.total_count_change;
-  } else if (event->event_type == RMW_EVENT_MESSAGE_LOST) {
-    auto * impl = static_cast<SubscriptionImpl *>(event->data);
-    DDS_SampleLostStatus status{};
-    {
-      const std::lock_guard<std::mutex> lock(impl->event_mutex);
-      if (impl->event_callbacks[event->event_type] != nullptr) {
-        status = impl->sample_lost;
-        impl->sample_lost.total_count_change = 0;
-        (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event->event_type], false);
-      } else if (DDS_DataReader_get_sample_lost_status(impl->reader, &status) != DDS_RETCODE_OK) {
-        return RMW_RET_ERROR;
-      }
-    }
-    auto * result = static_cast<rmw_message_lost_status_t *>(event_info);
-    result->total_count = static_cast<size_t>(status.total_count);
-    result->total_count_change = static_cast<size_t>(status.total_count_change);
-  } else if (event->event_type == RMW_EVENT_OFFERED_QOS_INCOMPATIBLE) {
-    auto * impl = static_cast<PublisherImpl *>(event->data);
-    DDS_OfferedIncompatibleQosStatus status{};
-    {
-      const std::lock_guard<std::mutex> lock(impl->event_mutex);
-      if (impl->event_callbacks[event->event_type] != nullptr) {
-        status.total_count = impl->offered_incompatible_qos.total_count;
-        status.total_count_change = impl->offered_incompatible_qos.total_count_change;
-        status.last_policy_id = impl->offered_incompatible_qos.last_policy_id;
-        impl->offered_incompatible_qos.total_count_change = 0;
-        (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event->event_type], false);
-      } else if (DDS_DataWriter_get_offered_incompatible_qos_status(
-          impl->writer, &status) != DDS_RETCODE_OK)
-      {
-        return RMW_RET_ERROR;
-      }
-    }
-    auto * result = static_cast<rmw_offered_qos_incompatible_event_status_t *>(event_info);
-    result->total_count = status.total_count;
-    result->total_count_change = status.total_count_change;
-    result->last_policy_kind = qos_policy(status.last_policy_id);
-  } else if (event->event_type == RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE) {
-    auto * impl = static_cast<SubscriptionImpl *>(event->data);
-    DDS_RequestedIncompatibleQosStatus status{};
-    {
-      const std::lock_guard<std::mutex> lock(impl->event_mutex);
-      if (impl->event_callbacks[event->event_type] != nullptr) {
-        status.total_count = impl->requested_incompatible_qos.total_count;
-        status.total_count_change = impl->requested_incompatible_qos.total_count_change;
-        status.last_policy_id = impl->requested_incompatible_qos.last_policy_id;
-        impl->requested_incompatible_qos.total_count_change = 0;
-        (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event->event_type], false);
-      } else if (DDS_DataReader_get_requested_incompatible_qos_status(
-          impl->reader, &status) != DDS_RETCODE_OK)
-      {
-        return RMW_RET_ERROR;
-      }
-    }
-    auto * result = static_cast<rmw_requested_qos_incompatible_event_status_t *>(event_info);
-    result->total_count = status.total_count;
-    result->total_count_change = status.total_count_change;
-    result->last_policy_kind = qos_policy(status.last_policy_id);
+    (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[event->event_type], false);
   } else {
     return RMW_RET_UNSUPPORTED;
   }
@@ -602,9 +685,13 @@ rmw_ret_t rmw_event_set_callback(
         if (impl->event_callbacks[type] != nullptr) {mask |= event_mask(type);}
       }
     }
-    return DDS_DataWriter_set_listener(
-      impl->writer, mask == DDS_STATUS_MASK_NONE ? nullptr : &listener, mask) == DDS_RETCODE_OK ?
-           RMW_RET_OK : RMW_RET_ERROR;
+    if (DDS_DataWriter_set_listener(
+        impl->writer, mask == DDS_STATUS_MASK_NONE ? nullptr : &listener, mask) != DDS_RETCODE_OK)
+    {
+      return RMW_RET_ERROR;
+    }
+    after_set_callback(impl, event->event_type);
+    return RMW_RET_OK;
   }
   auto * impl = static_cast<SubscriptionImpl *>(event->data);
   {
@@ -616,7 +703,9 @@ rmw_ret_t rmw_event_set_callback(
   // whole listener and silently drop the always-on
   // on_reliable_writer_ready readiness tracker apply_subscription_listener
   // installs at subscription-creation time. See its doc comment.
-  return rmw_zzdds_cpp::apply_subscription_listener(impl) ? RMW_RET_OK : RMW_RET_ERROR;
+  if (!rmw_zzdds_cpp::apply_subscription_listener(impl)) {return RMW_RET_ERROR;}
+  after_set_callback(impl, event->event_type);
+  return RMW_RET_OK;
 }
 
 }

@@ -40,7 +40,6 @@ struct PublisherImpl final
   DDS_LivelinessLostStatus liveliness_lost{};
   DDS_OfferedDeadlineMissedStatus offered_deadline_missed{};
   DDS_OfferedIncompatibleQosStatus offered_incompatible_qos{};
-  bool publication_matched_pending{false};
   bool is_service_endpoint{false};
 };
 
@@ -74,8 +73,6 @@ struct SubscriptionImpl final
   DDS_RequestedDeadlineMissedStatus requested_deadline_missed{};
   DDS_RequestedIncompatibleQosStatus requested_incompatible_qos{};
   DDS_SampleLostStatus sample_lost{};
-  bool subscription_matched_pending{false};
-  bool liveliness_changed_pending{false};
   bool is_service_endpoint{false};
   // Count of matched writers that have proven (via zzdds's
   // DataReaderListenerEx::on_reliable_writer_ready) they've actually
