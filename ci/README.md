@@ -40,7 +40,7 @@ codegen" smoke, not a build of the RMW itself (and no upstream conformance).
 
 ## Run it locally
 
-Needs [podman](https://podman.io/) (or docker) and a local Zig 0.16.0. Nothing
+Needs [podman](https://podman.io/) (or docker) and a local Zig matching zzdds’s minimum_zig_version. Nothing
 else — the `ros:rolling` image supplies colcon, rosdep, vcstool and ROS.
 
 ```sh
@@ -49,7 +49,7 @@ podman pull docker.io/library/ros:rolling
 podman run --rm \
   -v "$PWD":/src/rmw_zzdds:ro \
   -v /path/to/zzdds:/src/zzdds:ro \
-  -v /path/to/zig-0.16.0:/opt/zig:ro \
+  -v /path/to/zig-0.17.0:/opt/zig:ro \
   -v /tmp/rmw-ci-ws:/ws \
   docker.io/library/ros:rolling \
   bash -lc 'PATH=/opt/zig:$PATH python3 /src/rmw_zzdds/ci/build_and_test.py \
@@ -86,3 +86,9 @@ passes.
 - **Release-axis matrix legs.** `build_matrix()` adds a "last zzdds release"
   leg when given `--zzdds-release`; a "last rmw_zzdds release" leg is a
   checkout-ref change in `ci.yml`. Both are inert until the first release tags.
+
+For local co-development before a zidl release, pass `--zidl-src /path/to/zidl`
+alongside `--zzdds-src`. The runner copies it into the scratch workspace as a
+sibling of zzdds so a `../zidl` package dependency resolves. CI selects Zig from
+the checked-out zzdds manifest; the older-release matrix lane keeps its matching
+compiler until that release pin is advanced.

@@ -18,7 +18,7 @@ locally:
 
     podman run --rm -it \\
         -v "$PWD":/src/rmw_zzdds:ro -v /path/to/zzdds:/src/zzdds:ro \\
-        -v /path/to/zig-0.16.0:/opt/zig:ro \\
+        -v /path/to/zig-0.17.0:/opt/zig:ro \\
         docker.io/library/ros:rolling \\
         bash -lc 'PATH=/opt/zig:$PATH \\
             python3 /src/rmw_zzdds/ci/build_and_test.py \\
@@ -290,7 +290,7 @@ def _resolve_source(
             dest,
             ignore=shutil.ignore_patterns(
                 ".git", "build", "install", "log", "zig-out", ".zig-cache", "zig-cache",
-                ".ci-ws", "__pycache__",
+                ".ci-ws", "__pycache__", "zig-pkg",
             ),
             symlinks=True,
         )
@@ -317,7 +317,7 @@ def build_zzdds(zzdds_src: Path, *, jobs: int) -> Path:
     """Build + install zzdds's C/C++ bindings. Returns the install prefix
     (`zig-out`) to hand to CMake as CMAKE_PREFIX_PATH.
     """
-    _require("zig", hint="pass --zig /path/to/zig, or add the Zig 0.16.0 dir to PATH")
+    _require("zig", hint="pass --zig /path/to/zig, or add the Zig matching zzdds minimum_zig_version dir to PATH")
     zig_out = zzdds_src / "zig-out"
     _run(
         ["zig", "build", *ZZDDS_BUILD_ARGS, f"-j{jobs}"],
@@ -557,6 +557,9 @@ def run(args: argparse.Namespace) -> int:
         if args.ros_target:
             print(f"[info] ros-target={args.ros_target}  ROS_DISTRO={args.ros_distro}",
                   flush=True)
+        if args.zidl_src:
+            _resolve_source(src=args.zidl_src, repo="zz-iot/zidl", ref=None,
+                            dest=ws_root / "zidl", label="zidl")
         full = args.rolling_repos == "overlay"
         if not full:
             print("[warn] --rolling-repos skip: building/testing only the zzdds type "
@@ -641,6 +644,8 @@ def main(argv: list[str] | None = None) -> int:
                        help="scratch workspace (default: <repo>/.ci-ws)")
 
     env = p.add_argument_group("environment")
+    src.add_argument("--zidl-src", metavar="DIR",
+                       help="optional sibling zidl source for local zzdds co-development")
     env.add_argument("--zig", metavar="PATH", help="zig binary (default: from PATH)")
     env.add_argument("--ros-target", choices=("digest", "rolling"), default=None,
                      help='which ROS image leg this run represents ("digest" = pinned, '
