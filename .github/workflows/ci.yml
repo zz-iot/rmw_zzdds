@@ -63,7 +63,7 @@ env:
   # the zzdds commit under test). ci/build_and_test.py reads it via
   # --zzdds-release's env fallback (ZZDDS_RELEASE_REF). Bump it deliberately
   # when a new zzdds release lands.
-  ZZDDS_RELEASE_REF: v0.3.6-zig.0.16.0
+  ZZDDS_RELEASE_REF: v0.3.7-zig.0.17.0
 
 jobs:
   # ── zzdds regression gate (called from zzdds CI) ─────────────────────────
@@ -97,10 +97,21 @@ jobs:
           path: zzdds
           persist-credentials: false
 
+      - name: Determine compiler from zzdds manifest
+        id: zig-version
+        shell: bash
+        run: |
+          python3 - <<'PY_ZIG' >> "$GITHUB_OUTPUT"
+          import pathlib, re
+          text = pathlib.Path("zzdds/build.zig.zon").read_text()
+          version = re.search(r'\.minimum_zig_version\s*=\s*"([^"]+)"', text).group(1)
+          print(f"version={version}")
+          PY_ZIG
+
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          version: "0.16.0"
+          version: ${{ steps.zig-version.outputs.version }}
 
       - name: Build rmw_zzdds and run its tests
         # --upstream-tests (the script default, spelled out here like --test):
@@ -183,10 +194,21 @@ jobs:
           path: zzdds
           persist-credentials: false
 
+      - name: Determine compiler from zzdds manifest
+        id: zig-version
+        shell: bash
+        run: |
+          python3 - <<'PY_ZIG' >> "$GITHUB_OUTPUT"
+          import pathlib, re
+          text = pathlib.Path("zzdds/build.zig.zon").read_text()
+          version = re.search(r'\.minimum_zig_version\s*=\s*"([^"]+)"', text).group(1)
+          print(f"version={version}")
+          PY_ZIG
+
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          version: "0.16.0"
+          version: ${{ steps.zig-version.outputs.version }}
 
       - name: Build rmw_zzdds and run its tests
         # --upstream-tests (the script default, spelled out here like --test):
