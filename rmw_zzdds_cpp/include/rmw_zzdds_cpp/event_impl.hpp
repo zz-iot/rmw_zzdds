@@ -13,6 +13,12 @@ DDS_Condition event_condition(const rmw_event_t * event);
 ContextImpl * event_context(const rmw_event_t * event);
 void cleanup_endpoint_events(PublisherImpl * impl);
 void cleanup_endpoint_events(SubscriptionImpl * impl);
+// The endpoint's matched count (current_count). Reading zzdds's matched status
+// takes its change, so this reads it through the event accounting, which
+// counts the change's event (see the comment above add_changes in
+// rmw_event.cpp). Returns false if zzdds's getter fails.
+bool count_matched(PublisherImpl * impl, size_t * count);
+bool count_matched(SubscriptionImpl * impl, size_t * count);
 // A subscription's full DDS_DataReader listener is the event-driven base
 // callbacks rmw_event_set_callback's registered rmw_event_type_ts need, plus
 // an always-on zzdds DataReaderListenerEx::on_reliable_writer_ready callback

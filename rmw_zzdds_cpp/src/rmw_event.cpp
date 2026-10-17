@@ -66,9 +66,12 @@ rmw_qos_policy_kind_t qos_policy(DDS_QosPolicyId_t id)
 // SubscriptionImpl (publication_matched, ...), its *_change fields holding the
 // changes not yet taken. read_status reads zzdds's current status and adds what
 // changed since the stored one, computed from the counts rather than taken
-// from zzdds's own *_change fields. The listener, rmw_take_event and event
-// initialization all go through it, under event_mutex, so each read sees state
-// at least as new as the one before and every change is counted exactly once.
+// from zzdds's own *_change fields. The listener, rmw_take_event, event
+// initialization and the matched counts (read_matched_count) all go through
+// it, under event_mutex, so each read sees state at least as new as the one
+// before and every change is counted exactly once. Nothing else may call a
+// zzdds status getter for these statuses: it would take a change whose
+// listener then finds nothing, so its event would be counted nowhere.
 // Reading zzdds under event_mutex cannot deadlock against a listener: zzdds
 // calls no listener while holding its own locks.
 //
@@ -297,6 +300,21 @@ bool read_status(SubscriptionImpl * impl, rmw_event_type_t type)
   }
 }
 
+// Counts `added` more untaken events for `type` and triggers its event; returns
+// the callback to tell about them, if one is registered (with its user data in
+// `user_data`). Caller holds impl->event_mutex.
+template<typename Impl>
+rmw_event_callback_t count_events_locked(
+  Impl * impl, rmw_event_type_t type, size_t added, const void ** user_data)
+{
+  impl->event_count[type] += added;
+  (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[type], true);
+  const rmw_event_callback_t callback = impl->event_callbacks[type];
+  *user_data = impl->event_user_data[type];
+  if (callback != nullptr) {impl->event_reported[type] += added;}
+  return callback;
+}
+
 // A zzdds listener for `type` fired: updates the stored status and counts the
 // events `uncounted` finds (called under event_mutex after the update),
 // triggering the event and telling its callback if there are any. See the
@@ -312,27 +330,50 @@ void on_status(Impl * impl, rmw_event_type_t type, Uncounted && uncounted)
     (void)read_status(impl, type);
     added = uncounted();
     if (added == 0U) {return;}
-    impl->event_count[type] += added;
-    (void)DDS_GuardCondition_set_trigger_value(impl->event_guards[type], true);
-    callback = impl->event_callbacks[type];
-    user_data = impl->event_user_data[type];
-    if (callback != nullptr) {impl->event_reported[type] += added;}
+    callback = count_events_locked(impl, type, added, &user_data);
   }
   if (callback != nullptr) {callback(user_data, added);}
 }
 
 // For every status but liveliness changed: the untaken events not counted yet.
+// Caller holds impl->event_mutex.
+template<typename Impl>
+size_t uncounted_events(Impl * impl, rmw_event_type_t type)
+{
+  const size_t untaken = visit_status(impl, type, [](const auto & s) {return untaken_events(s);});
+  return untaken > impl->event_count[type] ? untaken - impl->event_count[type] : 0U;
+}
+
 // The status zzdds passes is not used: listeners can run concurrently, so it
 // may be older than the stored one.
 template<typename Impl>
 void on_counted_status(Impl * impl, rmw_event_type_t type)
 {
-  on_status(
-    impl, type, [impl, type] {
-      const size_t untaken =
-      visit_status(impl, type, [](const auto & s) {return untaken_events(s);});
-      return untaken > impl->event_count[type] ? untaken - impl->event_count[type] : 0U;
-    });
+  on_status(impl, type, [impl, type] {return uncounted_events(impl, type);});
+}
+
+// An endpoint's matched count, read through read_status like a listener: the
+// zzdds getter takes the change, so the change's listener, running later,
+// finds nothing, and the events read here must be counted here. Before the
+// event is initialized there is nothing to count them for; initialize_event
+// counts them from the stored status. See the comment above add_changes.
+template<typename Impl, typename Status>
+bool read_matched_count(Impl * impl, rmw_event_type_t type, const Status & stored, size_t * count)
+{
+  rmw_event_callback_t callback = nullptr;
+  const void * user_data = nullptr;
+  size_t added = 0U;
+  {
+    const std::lock_guard<std::mutex> lock(impl->event_mutex);
+    if (!read_status(impl, type)) {return false;}
+    *count = stored.current_count < 0 ? 0U : static_cast<size_t>(stored.current_count);
+    if (impl->event_guards[type] == nullptr) {return true;}
+    added = uncounted_events(impl, type);
+    if (added == 0U) {return true;}
+    callback = count_events_locked(impl, type, added, &user_data);
+  }
+  if (callback != nullptr) {callback(user_data, added);}
+  return true;
 }
 
 void publication_matched_listener(DDS_DataWriter, const DDS_PublicationMatchedStatus *, void * data)
@@ -531,6 +572,17 @@ void cleanup(Impl * impl)
 
 void cleanup_endpoint_events(PublisherImpl * impl) {cleanup(impl);}
 void cleanup_endpoint_events(SubscriptionImpl * impl) {cleanup(impl);}
+
+bool count_matched(PublisherImpl * impl, size_t * count)
+{
+  return read_matched_count(impl, RMW_EVENT_PUBLICATION_MATCHED, impl->publication_matched, count);
+}
+
+bool count_matched(SubscriptionImpl * impl, size_t * count)
+{
+  return read_matched_count(
+    impl, RMW_EVENT_SUBSCRIPTION_MATCHED, impl->subscription_matched, count);
+}
 
 namespace
 {

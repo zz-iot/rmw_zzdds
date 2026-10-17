@@ -283,4 +283,60 @@ TEST_F(EventCallbacks, a_liveliness_listener_passing_the_taken_status_reports_no
   EXPECT_EQ(RMW_RET_OK, rmw_event_set_callback(&liveliness, nullptr, nullptr));
   EXPECT_EQ(RMW_RET_OK, rmw_event_fini(&liveliness));
 }
+
+// zzdds calls a listener after a getter can already see its change, and a
+// getter that takes the change leaves the listener nothing to report.
+// Counting matched publishers reads the matched status, so it counts the
+// events it reads itself. The test removes the zzdds listener, as if it had
+// not run yet; match_publishers waits by counting matched publishers.
+TEST_F(EventCallbacks, counting_matched_publishers_counts_the_events_it_reads)
+{
+  ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&event_, count_events, &callback_count_));
+  auto * impl = static_cast<rmw_zzdds_cpp::SubscriptionImpl *>(subscription_->data);
+  ASSERT_EQ(
+    DDS_RETCODE_OK, DDS_DataReader_set_listener(impl->reader, nullptr, DDS_STATUS_MASK_NONE));
+  match_publishers(1U);
+  EXPECT_EQ(1U, callback_count_.load());
+  EXPECT_TRUE(ready(event_));
+  expect_taken(1U, 1U, 1U, 1);
+}
+
+// The same for a publisher counting its matched subscriptions.
+TEST_F(EventCallbacks, counting_matched_subscriptions_counts_the_events_it_reads)
+{
+  match_publishers(1U);
+  rmw_publisher_t * publisher = publishers_.back();
+  auto count_subscriptions = [publisher](size_t expected) {
+      return wait_until(
+        [publisher, expected] {
+          size_t matched = 0U;
+          return rmw_publisher_count_matched_subscriptions(publisher, &matched) ==
+                 RMW_RET_OK && matched == expected;
+        });
+    };
+  ASSERT_TRUE(count_subscriptions(1U));
+  rmw_event_t matched = rmw_get_zero_initialized_event();
+  ASSERT_EQ(
+    RMW_RET_OK, rmw_publisher_event_init(&matched, publisher, RMW_EVENT_PUBLICATION_MATCHED));
+  rmw_matched_status_t status{};
+  bool taken = false;
+  ASSERT_EQ(RMW_RET_OK, rmw_take_event(&matched, &status, &taken));
+  std::atomic_size_t matched_count{0U};
+  ASSERT_EQ(RMW_RET_OK, rmw_event_set_callback(&matched, count_events, &matched_count));
+  auto * impl = static_cast<rmw_zzdds_cpp::PublisherImpl *>(publisher->data);
+  ASSERT_EQ(
+    DDS_RETCODE_OK, DDS_DataWriter_set_listener(impl->writer, nullptr, DDS_STATUS_MASK_NONE));
+
+  const auto subscription_options = rmw_get_default_subscription_options();
+  rmw_subscription_t * second = rmw_create_subscription(
+    node_, type_support_, topic_, &qos_, &subscription_options);
+  ASSERT_NE(nullptr, second);
+  ASSERT_TRUE(count_subscriptions(2U));
+  EXPECT_EQ(1U, matched_count.load());
+  EXPECT_TRUE(ready(matched));
+
+  EXPECT_EQ(RMW_RET_OK, rmw_event_set_callback(&matched, nullptr, nullptr));
+  EXPECT_EQ(RMW_RET_OK, rmw_event_fini(&matched));
+  EXPECT_EQ(RMW_RET_OK, rmw_destroy_subscription(node_, second));
+}
 }  // namespace

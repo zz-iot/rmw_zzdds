@@ -866,14 +866,10 @@ rmw_ret_t rmw_publisher_count_matched_subscriptions(
     RMW_SET_ERROR_MSG("a valid publisher and count output are required");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  DDS_PublicationMatchedStatus status{};
-  if (DDS_DataWriter_get_publication_matched_status(
-      static_cast<PublisherImpl *>(publisher->data)->writer, &status) != DDS_RETCODE_OK)
-  {
+  if (!rmw_zzdds_cpp::count_matched(static_cast<PublisherImpl *>(publisher->data), count)) {
     RMW_SET_ERROR_MSG("failed to query matched subscriptions");
     return RMW_RET_ERROR;
   }
-  *count = status.current_count < 0 ? 0U : static_cast<size_t>(status.current_count);
   return RMW_RET_OK;
 }
 
@@ -1522,14 +1518,10 @@ rmw_ret_t rmw_subscription_count_matched_publishers(
     RMW_SET_ERROR_MSG("a valid subscription and count output are required");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  DDS_SubscriptionMatchedStatus status{};
-  if (DDS_DataReader_get_subscription_matched_status(
-      static_cast<SubscriptionImpl *>(subscription->data)->reader, &status) != DDS_RETCODE_OK)
-  {
+  if (!rmw_zzdds_cpp::count_matched(static_cast<SubscriptionImpl *>(subscription->data), count)) {
     RMW_SET_ERROR_MSG("failed to query matched publishers");
     return RMW_RET_ERROR;
   }
-  *count = status.current_count < 0 ? 0U : static_cast<size_t>(status.current_count);
   return RMW_RET_OK;
 }
 
