@@ -118,8 +118,14 @@ ZZDDS_BUILD_ARGS = ["-Dc-binding=true", "-Dcpp-binding=true", "install"]
 # value with:
 #   podman pull docker.io/library/ros:rolling
 #   podman image inspect docker.io/library/ros:rolling --format '{{index .RepoDigests 0}}'
-ROS_ROLLING_DIGEST = "ros@sha256:6536553889f36066b3ecea5e46d80c31c6d70aa66edb5d396beb8c22248c3524"
+ROS_ROLLING_DIGEST = "ros@sha256:fd1a2cf7995148ad54d29fbf452b9084b9b8a386ee36ee8241495410903a58cf"
 ROS_ROLLING_TAG = "ros:rolling"
+
+# ros/rosdistro commit that `rosdep` reads on the gating legs. Without it, rosdep
+# reads rosdistro's live master, so a ROS release can remove a key that the
+# pinned ci/rolling.repos revisions still need and break CI with no change here.
+# Bump it with those revisions and ROS_ROLLING_DIGEST (see ci/README.md).
+ROSDISTRO_COMMIT = "1d79acdd5fef0a4732e15d42af29d02f1633f387"
 
 DEFAULT_ZZDDS_REPO = "zz-iot/zzdds"
 DEFAULT_RMW_ZZDDS_REPO = "zz-iot/rmw_zzdds"
@@ -371,7 +377,24 @@ def make_workspace(ws: Path, rmw_src: Path, *, rolling_repos: str, ros_setup: Pa
 DEFAULT_ROSDEP_SKIP_KEYS = "rmw_connextdds rti-connext-dds-7.7.0"
 
 
-def rosdep_install(ws: Path, *, ros_setup: Path, ros_distro: str, skip_keys: str) -> None:
+def _pin_rosdep_sources(ws: Path, commit: str) -> str:
+    """Write rosdep sources for ros/rosdistro at `commit` and return the shell
+    exports that make rosdep use them instead of the live master branch."""
+    base = f"https://raw.githubusercontent.com/ros/rosdistro/{commit}"
+    sources = ws / ".rosdep-sources"
+    sources.mkdir(parents=True, exist_ok=True)
+    (sources / "pinned.list").write_text(
+        "".join(f"yaml {base}/rosdep/{name}.yaml\n" for name in ("base", "python", "ruby"))
+    )
+    return (
+        f'export ROSDEP_SOURCE_PATH="{sources}"\n'
+        f'export ROSDISTRO_INDEX_URL="{base}/index-v4.yaml"\n'
+    )
+
+
+def rosdep_install(
+    ws: Path, *, ros_setup: Path, ros_distro: str, skip_keys: str, rosdistro_commit: str | None
+) -> None:
     _require("rosdep", hint="apt-get install -y python3-rosdep && rosdep init")
     # ros:<distro> images ship with the apt lists cleared to save space;
     # rosdep shells out to `apt-get install` and needs a populated index.
@@ -381,16 +404,20 @@ def rosdep_install(ws: Path, *, ros_setup: Path, ros_distro: str, skip_keys: str
         except StepError as e:
             print(f"[warn] {e} -- continuing; rosdep install may fail on a stale index",
                   flush=True)
+    exports = _pin_rosdep_sources(ws, rosdistro_commit) if rosdistro_commit else ""
     # `rosdep update` is cheap and guards against a stale cache in a
-    # freshly-pulled image; failure to update is not fatal on its own.
+    # freshly-pulled image. Failing to update is not fatal on its own, unless
+    # rosdep is pinned: the cache in the image wouldn't be at the pinned commit.
     try:
-        _bash("rosdep update --rosdistro " + ros_distro, ros_setup=ros_setup, cwd=ws,
+        _bash(exports + "rosdep update --rosdistro " + ros_distro, ros_setup=ros_setup, cwd=ws,
               timeout=300, label="rosdep update")
     except StepError as e:
+        if rosdistro_commit:
+            raise
         print(f"[warn] {e} -- continuing with existing rosdep cache", flush=True)
     skip = f' --skip-keys "{skip_keys}"' if skip_keys else ""
     _bash(
-        f"rosdep install --from-paths src --ignore-src -y --rosdistro {ros_distro}{skip}",
+        exports + f"rosdep install --from-paths src --ignore-src -y --rosdistro {ros_distro}{skip}",
         ros_setup=ros_setup,
         cwd=ws,
         timeout=900,
@@ -581,8 +608,11 @@ def run(args: argparse.Namespace) -> int:
         zzdds_prefix = build_zzdds(zzdds_src, jobs=args.jobs)
         make_workspace(ros_ws, rmw_src, rolling_repos=args.rolling_repos, ros_setup=ros_setup)
         if not args.skip_rosdep:
+            # The moving-tag leg stays on live rosdistro: it's the early warning
+            # for upstream drift.
+            rosdistro_commit = None if args.ros_target == "rolling" else ROSDISTRO_COMMIT
             rosdep_install(ros_ws, ros_setup=ros_setup, ros_distro=args.ros_distro,
-                           skip_keys=args.rosdep_skip_keys)
+                           skip_keys=args.rosdep_skip_keys, rosdistro_commit=rosdistro_commit)
         colcon_build(ros_ws, zzdds_prefix, ros_setup=ros_setup, jobs=args.jobs,
                      testing=args.test, full=full, upstream_tests=run_upstream)
         if args.test:

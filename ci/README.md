@@ -63,13 +63,26 @@ instead. `--print-matrix {pr,schedule,zzdds-pr}` emits the workflow's build
 matrix as JSON and exits. Add `--no-upstream-tests` to skip the
 `test_rmw_implementation` layer for a faster local iteration.
 
-## The pinned ROS image
+## The pinned ROS inputs
 
-The gating matrix leg pins `ros:rolling` by digest (`ROS_ROLLING_DIGEST` in
-`build_and_test.py`); the scheduled run adds a non-gating leg on the moving
-`ros:rolling` tag as an upstream-drift early warning. To bump the pin: update
-the digest, run `build_and_test.py` in the new image, and only commit once it
-passes.
+The gating legs pin three ROS inputs, which move together:
+
+- the `ros:rolling` image, by digest (`ROS_ROLLING_DIGEST` in
+  `build_and_test.py`, repeated in `.github/workflows/ci.yml`);
+- the `ros/rosdistro` commit that `rosdep` reads (`ROSDISTRO_COMMIT`);
+- the overlay in [`rolling.repos`](rolling.repos): the upstream release tag of
+  each repository's version in `rolling/distribution.yaml` at that commit.
+
+The scheduled run adds a non-gating leg on the moving `ros:rolling` tag and live
+rosdistro, as an upstream-drift early warning. It keeps the `rolling.repos`
+overlay.
+
+To bump: update all three, run `build_and_test.py` in the new image, and only
+commit once it passes.
+
+The apt repository isn't pinned, so `rosdep install` gets whatever
+`packages.ros.org` currently has. A key at the pinned commit can still fail if
+its package has since been removed from apt; bumping the pins is the fix.
 
 ## Follow-on work
 

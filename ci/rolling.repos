@@ -1,8 +1,10 @@
+# The upstream release tag of each repository's version in rolling/distribution.yaml
+# at ROSDISTRO_COMMIT (ci/build_and_test.py). Bump them together; see ci/README.md.
 repositories:
   ament_cmake_ros:
     type: git
     url: https://github.com/ros2/ament_cmake_ros.git
-    version: af4a5565542a25873ffed950de39c47c54d5c5a7
+    version: 3692a28cf50c91f770af63d28d4a304da62d0351
   ament_index:
     type: git
     url: https://github.com/ament/ament_index.git
@@ -14,33 +16,27 @@ repositories:
   rcl_interfaces:
     type: git
     url: https://github.com/ros2/rcl_interfaces.git
-    version: ce3f0f268ab5fb50d690be9a967acb7162773048
+    version: 56800da135660030bb816c72794afba15fe3a538
   rcutils:
     type: git
     url: https://github.com/ros2/rcutils.git
-    version: 049298ff8c19cbe0611b5d782048e0e949f808d5
+    version: 999c6f900499bc864118486d01ce7467f80080fb
   rmw:
     type: git
     url: https://github.com/ros2/rmw.git
-    version: 5f213420c641498db5b9d20d16fafdf37305ffbc
+    version: 0932be49fb6b3c9a8f3de82cf894bb628d7af59c
   rmw_dds_common:
     type: git
     url: https://github.com/ros2/rmw_dds_common.git
-    version: 142289276854ecaf8795ba86db91e2d9d2c9b40f
+    version: 5368692c546524075feb4945a005a42356bda9f8
   rmw_implementation:
     type: git
     url: https://github.com/ros2/rmw_implementation.git
-    # rolling @ 2026-09-03. Bumped from 37bb6799 (2026-08-06) to pick up
-    # ros2/rmw_implementation#285 "Clean up QoS test entities" (70218ee,
-    # 2026-08-26): test_{service,client} check_qos now destroy the entity
-    # before node teardown, so they no longer trip rmw_zzdds's
-    # rmw_destroy_node "node still owns ..." precondition. Also includes #99
-    # (dep metadata), #278 (a regression test), #291 (a warning fix).
-    version: ff8818df2328396011543db07e8ddca99b54345a
+    version: e3fbd058aa9c1f844051613255affac24e977ca1
   rosidl:
     type: git
     url: https://github.com/ros2/rosidl.git
-    version: 217324c7a90bc5b54d70045b4d8b7e2551b15b19
+    version: fb7429f80de26ccffc13daf6e3d361589e661c52
   rosidl_core:
     type: git
     url: https://github.com/ros2/rosidl_core.git
@@ -52,11 +48,11 @@ repositories:
   rosidl_dynamic_typesupport:
     type: git
     url: https://github.com/ros2/rosidl_dynamic_typesupport.git
-    version: 8ba70d0f6e15f549a03912efa141b02f8d5ce785
+    version: 995bba7f7367f12fd464f8da2401d377343cabc4
   rosidl_typesupport:
     type: git
     url: https://github.com/ros2/rosidl_typesupport.git
-    version: ee76f6fde5833c3b424b8e8a07c0f77104082086
+    version: 7fc2d07160944cb0b5f60c47fea5928fa936281c
   test_interface_files:
     type: git
     url: https://github.com/ros2/test_interface_files.git
@@ -64,4 +60,4 @@ repositories:
   unique_identifier_msgs:
     type: git
     url: https://github.com/ros2/unique_identifier_msgs.git
-    version: cd492c23611f579ac383e02d10f2901df552b97c
+    version: 120b1b216095881a6f1e9e74482752b27b578b9a
