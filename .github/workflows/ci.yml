@@ -76,7 +76,7 @@ jobs:
     if: inputs.mode == 'zzdds-pr'
     runs-on: ubuntu-latest
     container:
-      image: ros@sha256:6536553889f36066b3ecea5e46d80c31c6d70aa66edb5d396beb8c22248c3524
+      image: ros@sha256:fd1a2cf7995148ad54d29fbf452b9084b9b8a386ee36ee8241495410903a58cf
     steps:
       - name: Check out rmw_zzdds
         uses: actions/checkout@v4
