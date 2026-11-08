@@ -12,7 +12,8 @@ suite. It is the single entry point for:
 ## What it does
 
 1. Build + install zzdds's C and C++ bindings (`zig build -Dc-binding=true
-   -Dcpp-binding=true install`) into `zig-out`.
+   -Dcpp-binding=true install`) into `zig-out`. `--zzdds-shared-runtime` adds
+   `-Dshared-runtime=true`, so every participant runs on zzdds's shared runtime.
 2. Assemble a colcon workspace with rmw_zzdds and, by default, the pinned
    revisions from [`rolling.repos`](rolling.repos) (`--rolling-repos overlay`).
 3. `rosdep install` the remaining system/ROS dependencies.

@@ -46,6 +46,10 @@ on:
         description: "zzdds ref under test (mode zzdds-pr)"
         type: string
         default: ""
+      zzdds_shared_runtime:
+        description: "build zzdds with -Dshared-runtime=true (mode zzdds-pr)"
+        type: boolean
+        default: false
       rmw_zzdds_repo:
         type: string
         default: zz-iot/rmw_zzdds
@@ -54,7 +58,9 @@ on:
         default: ""
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.zzdds_ref }}
+  # zzdds_shared_runtime: zzdds calls this once per build of the same commit,
+  # and those calls must not cancel each other.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.zzdds_ref }}-${{ inputs.zzdds_shared_runtime }}
   cancel-in-progress: true
 
 env:
@@ -121,13 +127,14 @@ jobs:
           python3 rmw_zzdds/ci/build_and_test.py \
             --rmw-zzdds-src rmw_zzdds --zzdds-src zzdds \
             --ros-target digest \
-            --workspace "${{ runner.temp }}/rmw-ci-ws" --jobs 4 --test --upstream-tests
+            --workspace "${{ runner.temp }}/rmw-ci-ws" --jobs 4 --test --upstream-tests \
+            ${{ inputs.zzdds_shared_runtime && '--zzdds-shared-runtime' || '' }}
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rmw-zzdds-test-results-zzdds-pr
+          name: rmw-zzdds-test-results-zzdds-pr${{ inputs.zzdds_shared_runtime && '-shared-runtime' || '' }}
           path: ${{ runner.temp }}/rmw-ci-ws/ros_ws/build/*/test_results/**/*.xml
           if-no-files-found: ignore
           retention-days: 7
