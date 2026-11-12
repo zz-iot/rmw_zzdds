@@ -319,14 +319,14 @@ def _resolve_source(
 # ── Build steps ────────────────────────────────────────────────────────────
 
 
-def build_zzdds(zzdds_src: Path, *, jobs: int, shared_runtime: bool = False) -> Path:
+def build_zzdds(zzdds_src: Path, *, jobs: int) -> Path:
     """Build + install zzdds's C/C++ bindings. Returns the install prefix
     (`zig-out`) to hand to CMake as CMAKE_PREFIX_PATH.
     """
     _require("zig", hint="pass --zig /path/to/zig, or add the Zig matching zzdds minimum_zig_version dir to PATH")
     zig_out = zzdds_src / "zig-out"
     _run(
-        ["zig", "build", *ZZDDS_BUILD_ARGS, *(["-Dshared-runtime=true"] if shared_runtime else []), f"-j{jobs}"],
+        ["zig", "build", *ZZDDS_BUILD_ARGS, f"-j{jobs}"],
         cwd=zzdds_src,
         timeout=1800,
         label="zzdds: zig build (c+cpp bindings, install)",
@@ -605,8 +605,7 @@ def run(args: argparse.Namespace) -> int:
                   flush=True)
             run_upstream = False
 
-        zzdds_prefix = build_zzdds(zzdds_src, jobs=args.jobs,
-                                   shared_runtime=args.zzdds_shared_runtime)
+        zzdds_prefix = build_zzdds(zzdds_src, jobs=args.jobs)
         make_workspace(ros_ws, rmw_src, rolling_repos=args.rolling_repos, ros_setup=ros_setup)
         if not args.skip_rosdep:
             # The moving-tag leg stays on live rosdistro: it's the early warning
@@ -666,9 +665,6 @@ def main(argv: list[str] | None = None) -> int:
                             "--rolling-repos overlay + --test)")
     build.add_argument("--no-upstream-tests", dest="upstream_tests", action="store_false",
                        help="skip the upstream test_rmw_implementation conformance suites")
-    build.add_argument("--zzdds-shared-runtime", action="store_true",
-                       help="build zzdds with -Dshared-runtime=true, so every participant "
-                            "runs on its shared runtime (its contributor migration switch)")
     build.add_argument("--skip-rosdep", action="store_true",
                        help="assume ROS deps are already installed")
     build.add_argument("--rosdep-skip-keys", default=DEFAULT_ROSDEP_SKIP_KEYS,
