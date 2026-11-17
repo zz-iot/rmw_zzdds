@@ -298,7 +298,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t * options, rmw_context_t * context)
   context->options = copied_options;
   context->actual_domain_id = domain;
   context->impl = reinterpret_cast<rmw_context_impl_t *>(impl);
-  impl->graph_guard_native = zzdds_create_guardcondition();
+  impl->graph_guard_native = DDS_GuardCondition_create();
   impl->graph_guard_impl = rmw_zzdds_cpp::allocate_object<rmw_zzdds_cpp::GuardConditionImpl>(
     options->allocator, context, impl->graph_guard_native);
   impl->graph_guard_handle = rmw_zzdds_cpp::allocate_object<rmw_guard_condition_t>(
@@ -309,7 +309,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t * options, rmw_context_t * context)
     rmw_zzdds_cpp::deallocate_object(options->allocator, impl->graph_guard_handle);
     rmw_zzdds_cpp::deallocate_object(options->allocator, impl->graph_guard_impl);
     if (impl->graph_guard_native != nullptr) {
-      zzdds_destroy_guardcondition(impl->graph_guard_native);
+      (void)DDS_GuardCondition_destroy(impl->graph_guard_native);
     }
     (void)impl->dds.finalize();
     rmw_zzdds_cpp::deallocate_object(options->allocator, impl);
@@ -325,7 +325,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t * options, rmw_context_t * context)
   if (ret != RMW_RET_OK) {
     rmw_zzdds_cpp::deallocate_object(options->allocator, impl->graph_guard_handle);
     rmw_zzdds_cpp::deallocate_object(options->allocator, impl->graph_guard_impl);
-    zzdds_destroy_guardcondition(impl->graph_guard_native);
+    (void)DDS_GuardCondition_destroy(impl->graph_guard_native);
     (void)impl->dds.finalize();
     rmw_zzdds_cpp::deallocate_object(options->allocator, impl);
     rmw_zzdds_cpp::cleanup_options(&context->options);
@@ -388,7 +388,7 @@ rmw_ret_t rmw_context_fini(rmw_context_t * context)
   const rcutils_allocator_t allocator = impl->allocator;
   rmw_zzdds_cpp::deallocate_object(allocator, impl->graph_guard_handle);
   rmw_zzdds_cpp::deallocate_object(allocator, impl->graph_guard_impl);
-  zzdds_destroy_guardcondition(impl->graph_guard_native);
+  (void)DDS_GuardCondition_destroy(impl->graph_guard_native);
   const bool dds_cleanup_succeeded = impl->dds.finalize();
   rmw_zzdds_cpp::deallocate_object(allocator, impl);
   const rmw_ret_t options_ret = rmw_init_options_fini(&context->options);

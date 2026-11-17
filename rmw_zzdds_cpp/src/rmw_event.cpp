@@ -510,7 +510,7 @@ rmw_ret_t initialize_event(rmw_event_t * event, Impl * impl, rmw_event_type_t ty
   {
     const std::lock_guard<std::mutex> lock(impl->event_mutex);
     if (impl->event_guards[type] == nullptr) {
-      impl->event_guards[type] = zzdds_create_guardcondition();
+      impl->event_guards[type] = DDS_GuardCondition_create();
     }
     if (impl->event_guards[type] == nullptr) {
       RMW_SET_ERROR_MSG("failed to create the event guard condition");
@@ -566,7 +566,7 @@ template<typename Impl>
 void cleanup(Impl * impl)
 {
   for (DDS_GuardCondition guard : impl->event_guards) {
-    if (guard != nullptr) {zzdds_destroy_guardcondition(guard);}
+    if (guard != nullptr) {(void)DDS_GuardCondition_destroy(guard);}
   }
 }
 

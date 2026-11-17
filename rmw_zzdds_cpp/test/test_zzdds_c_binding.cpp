@@ -17,13 +17,13 @@ bool wait_for_status(DDS_Entity entity, DDS_StatusMask mask)
   {
     return false;
   }
-  DDS_WaitSet waitset = zzdds_create_waitset();
-  if (zzdds_waitset_is_nil(waitset)) {
+  DDS_WaitSet waitset = DDS_WaitSet_create();
+  if (waitset == nullptr) {
     return false;
   }
   DDS_Condition condition = DDS_StatusCondition_as_DDS_Condition(status);
   if (DDS_WaitSet_attach_condition(waitset, condition) != DDS_RETCODE_OK) {
-    zzdds_destroy_waitset(waitset);
+    (void)DDS_WaitSet_destroy(waitset);
     return false;
   }
   DDS_ConditionSeq active{};
@@ -31,7 +31,7 @@ bool wait_for_status(DDS_Entity entity, DDS_StatusMask mask)
   const bool triggered = DDS_WaitSet_wait(waitset, &active, &timeout) == DDS_RETCODE_OK;
   DDS_ConditionSeq_free(&active);
   (void)DDS_WaitSet_detach_condition(waitset, condition);
-  zzdds_destroy_waitset(waitset);
+  (void)DDS_WaitSet_destroy(waitset);
   return triggered;
 }
 
@@ -56,11 +56,11 @@ TEST(ZzddsCBinding, ParticipantContainersAndGuardConditionLifecycle)
     participant, nullptr, nullptr, 0U);
   ASSERT_NE(nullptr, subscriber);
 
-  DDS_GuardCondition guard = zzdds_create_guardcondition();
-  ASSERT_FALSE(zzdds_guardcondition_is_nil(guard));
+  DDS_GuardCondition guard = DDS_GuardCondition_create();
+  ASSERT_NE(nullptr, guard);
   EXPECT_EQ(DDS_RETCODE_OK, DDS_GuardCondition_set_trigger_value(guard, true));
   EXPECT_TRUE(DDS_GuardCondition_get_trigger_value(guard));
-  zzdds_destroy_guardcondition(guard);
+  EXPECT_EQ(DDS_RETCODE_OK, DDS_GuardCondition_destroy(guard));
 
   EXPECT_EQ(DDS_RETCODE_OK, DDS_DomainParticipant_delete_subscriber(participant, subscriber));
   EXPECT_EQ(DDS_RETCODE_OK, DDS_DomainParticipant_delete_publisher(participant, publisher));
