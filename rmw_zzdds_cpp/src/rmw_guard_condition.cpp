@@ -27,8 +27,8 @@ rmw_guard_condition_t * rmw_create_guard_condition(rmw_context_t * context)
     return nullptr;
   }
 
-  DDS_GuardCondition native = zzdds_create_guardcondition();
-  if (zzdds_guardcondition_is_nil(native)) {
+  DDS_GuardCondition native = DDS_GuardCondition_create();
+  if (native == nullptr) {
     RMW_SET_ERROR_MSG("failed to create the zzdds guard condition");
     return nullptr;
   }
@@ -40,7 +40,7 @@ rmw_guard_condition_t * rmw_create_guard_condition(rmw_context_t * context)
   if (impl == nullptr || handle == nullptr) {
     rmw_zzdds_cpp::deallocate_object(allocator, handle);
     rmw_zzdds_cpp::deallocate_object(allocator, impl);
-    zzdds_destroy_guardcondition(native);
+    (void)DDS_GuardCondition_destroy(native);
     RMW_SET_ERROR_MSG("failed to allocate guard condition resources");
     return nullptr;
   }
@@ -73,7 +73,7 @@ rmw_ret_t rmw_destroy_guard_condition(rmw_guard_condition_t * guard_condition)
   }
   const rcutils_allocator_t allocator = context_impl->allocator;
   auto * impl = static_cast<rmw_zzdds_cpp::GuardConditionImpl *>(guard_condition->data);
-  zzdds_destroy_guardcondition(impl->native);
+  (void)DDS_GuardCondition_destroy(impl->native);
   rmw_zzdds_cpp::deallocate_object(allocator, impl);
   rmw_zzdds_cpp::deallocate_object(allocator, guard_condition);
   --context_impl->active_entities;

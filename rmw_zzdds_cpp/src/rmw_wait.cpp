@@ -107,8 +107,8 @@ rmw_wait_set_t * rmw_create_wait_set(rmw_context_t * context, size_t max_conditi
     RMW_SET_ERROR_MSG("cannot create a wait set after context shutdown");
     return nullptr;
   }
-  DDS_WaitSet native = zzdds_create_waitset();
-  if (zzdds_waitset_is_nil(native)) {
+  DDS_WaitSet native = DDS_WaitSet_create();
+  if (native == nullptr) {
     RMW_SET_ERROR_MSG("failed to create the zzdds wait set");
     return nullptr;
   }
@@ -119,7 +119,7 @@ rmw_wait_set_t * rmw_create_wait_set(rmw_context_t * context, size_t max_conditi
   if (impl == nullptr || handle == nullptr) {
     rmw_zzdds_cpp::deallocate_object(allocator, handle);
     rmw_zzdds_cpp::deallocate_object(allocator, impl);
-    zzdds_destroy_waitset(native);
+    (void)DDS_WaitSet_destroy(native);
     RMW_SET_ERROR_MSG("failed to allocate wait set resources");
     return nullptr;
   }
@@ -143,7 +143,7 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t * wait_set)
   auto * impl = static_cast<WaitSetImpl *>(wait_set->data);
   auto * context = impl->context;
   const auto allocator = context->allocator;
-  zzdds_destroy_waitset(impl->native);
+  (void)DDS_WaitSet_destroy(impl->native);
   rmw_zzdds_cpp::deallocate_object(allocator, impl);
   rmw_zzdds_cpp::deallocate_object(allocator, wait_set);
   --context->active_entities;
