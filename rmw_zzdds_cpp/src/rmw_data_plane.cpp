@@ -492,6 +492,58 @@ bool make_dds_string_seq(
   return true;
 }
 
+// With context->mutex held: this context's Topic named `name`, created if it
+// has none. A participant has one Topic per name (DDS 1.4 section 2.2.2.2.1.12), so a
+// context's publishers and subscriptions of a topic share it; each releases it
+// with release_topic. Fails for a topic the context has with another type.
+DDS_Topic acquire_topic(ContextImpl * context, const char * name, const char * type_name)
+{
+  try {
+    const auto found = context->topics.find(name);
+    if (found != context->topics.end()) {
+      if (found->second.type_name != type_name) {
+        RMW_SET_ERROR_MSG("the topic already exists in this context with another type");
+        return nullptr;
+      }
+      ++found->second.users;
+      return found->second.topic;
+    }
+    DDS_Topic topic = DDS_DomainParticipant_create_topic(
+      context->dds.participant(), name, type_name, nullptr, nullptr, DDS_STATUS_MASK_NONE);
+    if (topic == nullptr) {
+      RMW_SET_ERROR_MSG("failed to create the DDS topic");
+      return nullptr;
+    }
+    try {
+      context->topics.emplace(name, ContextImpl::SharedTopic{topic, type_name, 1U});
+    } catch (const std::bad_alloc &) {
+      (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+      throw;
+    }
+    return topic;
+  } catch (const std::bad_alloc &) {
+    RMW_SET_ERROR_MSG("failed to record the DDS topic");
+    return nullptr;
+  }
+}
+
+// With context->mutex held: release a Topic from acquire_topic, deleting it
+// with its last user. A Topic that fails to delete stays recorded, unused, so
+// the next acquire_topic of its name reuses it.
+bool release_topic(ContextImpl * context, DDS_Topic topic)
+{
+  for (auto it = context->topics.begin(); it != context->topics.end(); ++it) {
+    if (it->second.topic != topic) {continue;}
+    if (it->second.users > 0U && --it->second.users > 0U) {return true;}
+    if (DDS_DomainParticipant_delete_topic(context->dds.participant(), topic) != DDS_RETCODE_OK) {
+      return false;
+    }
+    context->topics.erase(it);
+    return true;
+  }
+  return false;
+}
+
 // Every subscription reads through a content-filtered topic, created with an
 // empty expression when there is no filter (zzdds passes every sample then),
 // so rmw_subscription_set_content_filter can change, add or clear the filter
@@ -566,25 +618,22 @@ rmw_publisher_t * rmw_create_publisher(
     RMW_SET_ERROR_MSG("failed to register zzdds type support");
     return nullptr;
   }
-  DDS_Topic topic = DDS_DomainParticipant_create_topic(
-    context->dds.participant(), dds_name.data(), callbacks->dds_type_name,
-    nullptr, nullptr, DDS_STATUS_MASK_NONE);
+  DDS_Topic topic = acquire_topic(context, dds_name.data(), callbacks->dds_type_name);
   if (topic == nullptr) {
-    RMW_SET_ERROR_MSG("failed to create the DDS topic");
     return nullptr;
   }
   DDS_DataWriterQos dds_qos{};
   DDS_DataWriterQos_default(&dds_qos);
   if (!apply_qos(*qos, dds_qos)) {
     DDS_DataWriterQos_free(&dds_qos);
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    (void)release_topic(context, topic);
     return nullptr;
   }
   const rosidl_type_hash_t type_hash = type_hash_of(type_support);
   std::string encoded_type_hash;
   if (attach_type_hash(type_hash, encoded_type_hash, dds_qos) != RMW_RET_OK) {
     DDS_DataWriterQos_free(&dds_qos);
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    (void)release_topic(context, topic);
     RMW_SET_ERROR_MSG("failed to encode the publisher type hash");
     return nullptr;
   }
@@ -593,7 +642,7 @@ rmw_publisher_t * rmw_create_publisher(
     context->dds.publisher(), topic, &dds_qos, nullptr, DDS_STATUS_MASK_NONE);
   DDS_DataWriterQos_free(&dds_qos);
   if (writer == nullptr) {
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    (void)release_topic(context, topic);
     RMW_SET_ERROR_MSG("failed to create the DDS data writer");
     return nullptr;
   }
@@ -607,7 +656,7 @@ rmw_publisher_t * rmw_create_publisher(
     rmw_zzdds_cpp::deallocate_object(allocator, result);
     rmw_zzdds_cpp::deallocate_object(allocator, impl);
     (void)DDS_Publisher_delete_datawriter(context->dds.publisher(), writer);
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    (void)release_topic(context, topic);
     RMW_SET_ERROR_MSG("failed to allocate publisher resources");
     return nullptr;
   }
@@ -622,7 +671,7 @@ rmw_publisher_t * rmw_create_publisher(
     rmw_zzdds_cpp::deallocate_object(allocator, result);
     rmw_zzdds_cpp::deallocate_object(allocator, impl);
     (void)DDS_Publisher_delete_datawriter(context->dds.publisher(), writer);
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    (void)release_topic(context, topic);
     RMW_SET_ERROR_MSG("failed to obtain the zzdds writer RTPS GUID");
     return nullptr;
   }
@@ -652,7 +701,7 @@ rmw_publisher_t * rmw_create_publisher(
     rmw_zzdds_cpp::deallocate_object(allocator, result);
     rmw_zzdds_cpp::deallocate_object(allocator, impl);
     (void)DDS_Publisher_delete_datawriter(context->dds.publisher(), writer);
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    (void)release_topic(context, topic);
     RMW_SET_ERROR_MSG("failed to record the local zzdds publication GUID");
     return nullptr;
   }
@@ -712,8 +761,10 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t * node, rmw_publisher_t * publisher)
   impl->loaned_messages.clear();
   bool ok = DDS_Publisher_delete_datawriter(context->dds.publisher(),
       impl->writer) == DDS_RETCODE_OK;
-  ok = (DDS_DomainParticipant_delete_topic(context->dds.participant(),
-      impl->topic) == DDS_RETCODE_OK) && ok;
+  {
+    const std::lock_guard<std::mutex> lock(context->mutex);
+    ok = release_topic(context, impl->topic) && ok;
+  }
   const auto allocator = context->allocator;
   allocator.deallocate(const_cast<char *>(publisher->topic_name), allocator.state);
   rmw_zzdds_cpp::deallocate_object(allocator, impl);
@@ -947,22 +998,20 @@ rmw_subscription_t * rmw_create_subscription(
     RMW_SET_ERROR_MSG("failed to register zzdds type support");
     return nullptr;
   }
-  DDS_Topic topic = DDS_DomainParticipant_create_topic(
-    context->dds.participant(), dds_name.data(), callbacks->dds_type_name,
-    nullptr, nullptr, DDS_STATUS_MASK_NONE);
-  if (topic == nullptr) {RMW_SET_ERROR_MSG("failed to create the DDS topic"); return nullptr;}
+  DDS_Topic topic = acquire_topic(context, dds_name.data(), callbacks->dds_type_name);
+  if (topic == nullptr) {return nullptr;}
   DDS_DataReaderQos dds_qos{};
   DDS_DataReaderQos_default(&dds_qos);
   if (!apply_qos(*qos, dds_qos)) {
     DDS_DataReaderQos_free(&dds_qos);
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    (void)release_topic(context, topic);
     return nullptr;
   }
   const rosidl_type_hash_t type_hash = type_hash_of(type_support);
   std::string encoded_type_hash;
   if (attach_type_hash(type_hash, encoded_type_hash, dds_qos) != RMW_RET_OK) {
     DDS_DataReaderQos_free(&dds_qos);
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    (void)release_topic(context, topic);
     RMW_SET_ERROR_MSG("failed to encode the subscription type hash");
     return nullptr;
   }
@@ -971,7 +1020,7 @@ rmw_subscription_t * rmw_create_subscription(
     create_filtered_topic(context, topic, options->content_filter_options);
   if (filtered_topic == nullptr) {
     DDS_DataReaderQos_free(&dds_qos);
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    (void)release_topic(context, topic);
     return nullptr;
   }
   const DDS_TopicDescription topic_description =
@@ -987,7 +1036,7 @@ rmw_subscription_t * rmw_create_subscription(
     DDS_DataReaderQos_free(&dds_qos);
     (void)DDS_DomainParticipant_delete_contentfilteredtopic(
       context->dds.participant(), filtered_topic);
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    (void)release_topic(context, topic);
     RMW_SET_ERROR_MSG("failed to allocate subscription resources");
     return nullptr;
   }
@@ -998,7 +1047,7 @@ rmw_subscription_t * rmw_create_subscription(
     rmw_zzdds_cpp::deallocate_object(allocator, impl);
     (void)DDS_DomainParticipant_delete_contentfilteredtopic(
       context->dds.participant(), filtered_topic);
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    (void)release_topic(context, topic);
     RMW_SET_ERROR_MSG("failed to create the DDS data reader");
     return nullptr;
   }
@@ -1010,7 +1059,7 @@ rmw_subscription_t * rmw_create_subscription(
     rmw_zzdds_cpp::deallocate_object(allocator, impl);
     (void)DDS_DomainParticipant_delete_contentfilteredtopic(
       context->dds.participant(), filtered_topic);
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    (void)release_topic(context, topic);
     RMW_SET_ERROR_MSG("failed to create the DDS subscription read condition");
     return nullptr;
   }
@@ -1026,7 +1075,7 @@ rmw_subscription_t * rmw_create_subscription(
     rmw_zzdds_cpp::deallocate_object(allocator, impl);
     (void)DDS_DomainParticipant_delete_contentfilteredtopic(
       context->dds.participant(), filtered_topic);
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    (void)release_topic(context, topic);
     RMW_SET_ERROR_MSG("failed to allocate subscription resources");
     return nullptr;
   }
@@ -1048,7 +1097,7 @@ rmw_subscription_t * rmw_create_subscription(
     rmw_zzdds_cpp::deallocate_object(allocator, impl);
     (void)DDS_DomainParticipant_delete_contentfilteredtopic(
       context->dds.participant(), filtered_topic);
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    (void)release_topic(context, topic);
     RMW_SET_ERROR_MSG("failed to obtain the zzdds reader RTPS GUID");
     return nullptr;
   }
@@ -1077,7 +1126,7 @@ rmw_subscription_t * rmw_create_subscription(
     rmw_zzdds_cpp::deallocate_object(allocator, impl);
     (void)DDS_DomainParticipant_delete_contentfilteredtopic(
       context->dds.participant(), filtered_topic);
-    (void)DDS_DomainParticipant_delete_topic(context->dds.participant(), topic);
+    (void)release_topic(context, topic);
     RMW_SET_ERROR_MSG("failed to register the subscription in the local graph");
     return nullptr;
   }
@@ -1133,8 +1182,10 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t * node, rmw_subscription_t * subsc
       impl->reader) == DDS_RETCODE_OK) && ok;
   ok = (DDS_DomainParticipant_delete_contentfilteredtopic(
       context->dds.participant(), impl->filtered_topic) == DDS_RETCODE_OK) && ok;
-  ok = (DDS_DomainParticipant_delete_topic(context->dds.participant(),
-      impl->topic) == DDS_RETCODE_OK) && ok;
+  {
+    const std::lock_guard<std::mutex> lock(context->mutex);
+    ok = release_topic(context, impl->topic) && ok;
+  }
   const auto allocator = context->allocator;
   allocator.deallocate(const_cast<char *>(subscription->topic_name), allocator.state);
   rmw_zzdds_cpp::deallocate_object(allocator, impl);

@@ -77,6 +77,18 @@ if(BUILD_TESTING)
         "LD_LIBRARY_PATH=path_list_prepend:${_zzdds_library_dir}")
   endif()
 
+  ament_add_gtest(test_shared_topic test/test_shared_topic.cpp)
+  if(TARGET test_shared_topic)
+    target_compile_features(test_shared_topic PRIVATE cxx_std_17)
+    target_link_libraries(test_shared_topic
+      ${zzdds_typesupport_target}
+      rmw_zzdds_cpp::rmw_zzdds_cpp
+      ZZDDS::zzdds)
+    set_tests_properties(test_shared_topic PROPERTIES
+      ENVIRONMENT_MODIFICATION
+        "LD_LIBRARY_PATH=path_list_prepend:${_zzdds_library_dir}")
+  endif()
+
   ament_add_gtest(test_content_filter_events test/test_content_filter_events.cpp)
   if(TARGET test_content_filter_events)
     target_compile_features(test_content_filter_events PRIVATE cxx_std_17)

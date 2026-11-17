@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <mutex>
 #include <set>
+#include <string>
 #include <unordered_set>
 #include <unordered_map>
 
@@ -71,6 +72,16 @@ struct ContextImpl final
   GuardConditionImpl * graph_guard_impl{nullptr};
   rmw_guard_condition_t * graph_guard_handle{nullptr};
   size_t next_content_filter_id{0U};
+  // A participant has one Topic per name, so this context's publishers and
+  // subscriptions of a topic share one, and the last of them deletes it (see
+  // acquire_topic in rmw_data_plane.cpp). Guarded by `mutex`.
+  struct SharedTopic
+  {
+    DDS_Topic topic;
+    std::string type_name;
+    size_t users;
+  };
+  std::unordered_map<std::string, SharedTopic> topics;
   std::atomic_size_t active_entities{0U};
   rmw_node_t * graph_node{nullptr};
   bool suppress_graph_updates{false};
