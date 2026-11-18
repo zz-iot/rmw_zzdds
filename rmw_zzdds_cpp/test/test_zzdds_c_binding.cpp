@@ -40,7 +40,7 @@ bool wait_for_status(DDS_Entity entity, DDS_StatusMask mask)
 TEST(ZzddsCBinding, ParticipantContainersAndGuardConditionLifecycle)
 {
   zzdds_DomainParticipantFactory factory = zzdds_create_factory();
-  ASSERT_FALSE(zzdds_factory_is_nil(factory));
+  ASSERT_NE(nullptr, factory);
 
   DDS_DomainParticipantFactory dds_factory =
     zzdds_DomainParticipantFactory_as_DDS_DomainParticipantFactory(factory);
@@ -72,7 +72,7 @@ TEST(ZzddsCBinding, ParticipantContainersAndGuardConditionLifecycle)
 TEST(ZzddsCBinding, SerializedWriterReaderRoundTrip)
 {
   zzdds_DomainParticipantFactory factory = zzdds_create_factory();
-  ASSERT_FALSE(zzdds_factory_is_nil(factory));
+  ASSERT_NE(nullptr, factory);
   DDS_DomainParticipantFactory dds_factory =
     zzdds_DomainParticipantFactory_as_DDS_DomainParticipantFactory(factory);
   ASSERT_NE(nullptr, dds_factory);
