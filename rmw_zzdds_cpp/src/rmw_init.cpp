@@ -27,8 +27,7 @@ bool DdsContext::initialize(uint32_t domain_id) noexcept
   (void)reset();
 
   factory_ = zzdds_create_factory();
-  if (zzdds_factory_is_nil(factory_)) {
-    factory_ = nullptr;
+  if (factory_ == nullptr) {
     return false;
   }
 
