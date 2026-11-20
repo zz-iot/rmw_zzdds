@@ -18,7 +18,7 @@ locally:
 
     podman run --rm -it \\
         -v "$PWD":/src/rmw_zzdds:ro -v /path/to/zzdds:/src/zzdds:ro \\
-        -v /path/to/zig-0.17.0:/opt/zig:ro \\
+        -v /path/to/zig-0.17.1:/opt/zig:ro \\
         docker.io/library/ros:rolling \\
         bash -lc 'PATH=/opt/zig:$PATH \\
             python3 /src/rmw_zzdds/ci/build_and_test.py \\

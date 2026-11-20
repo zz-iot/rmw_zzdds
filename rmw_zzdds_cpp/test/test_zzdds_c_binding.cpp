@@ -39,7 +39,7 @@ bool wait_for_status(DDS_Entity entity, DDS_StatusMask mask)
 
 TEST(ZzddsCBinding, ParticipantContainersAndGuardConditionLifecycle)
 {
-  zzdds_DomainParticipantFactory factory = zzdds_create_factory();
+  zzdds_DomainParticipantFactory factory = zzdds_DomainParticipantFactory_create();
   ASSERT_NE(nullptr, factory);
 
   DDS_DomainParticipantFactory dds_factory =
@@ -66,12 +66,12 @@ TEST(ZzddsCBinding, ParticipantContainersAndGuardConditionLifecycle)
   EXPECT_EQ(DDS_RETCODE_OK, DDS_DomainParticipant_delete_publisher(participant, publisher));
   EXPECT_EQ(DDS_RETCODE_OK, DDS_DomainParticipantFactory_delete_participant(
       dds_factory, participant));
-  zzdds_destroy_factory(factory);
+  EXPECT_EQ(DDS_RETCODE_OK, zzdds_DomainParticipantFactory_destroy(factory));
 }
 
 TEST(ZzddsCBinding, SerializedWriterReaderRoundTrip)
 {
-  zzdds_DomainParticipantFactory factory = zzdds_create_factory();
+  zzdds_DomainParticipantFactory factory = zzdds_DomainParticipantFactory_create();
   ASSERT_NE(nullptr, factory);
   DDS_DomainParticipantFactory dds_factory =
     zzdds_DomainParticipantFactory_as_DDS_DomainParticipantFactory(factory);
@@ -149,5 +149,5 @@ TEST(ZzddsCBinding, SerializedWriterReaderRoundTrip)
   EXPECT_EQ(DDS_RETCODE_OK, DDS_DomainParticipant_delete_publisher(participant, publisher));
   EXPECT_EQ(DDS_RETCODE_OK, DDS_DomainParticipantFactory_delete_participant(
       dds_factory, participant));
-  zzdds_destroy_factory(factory);
+  EXPECT_EQ(DDS_RETCODE_OK, zzdds_DomainParticipantFactory_destroy(factory));
 }
