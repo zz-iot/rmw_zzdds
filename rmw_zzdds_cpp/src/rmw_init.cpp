@@ -26,7 +26,7 @@ bool DdsContext::initialize(uint32_t domain_id) noexcept
 {
   (void)reset();
 
-  factory_ = zzdds_create_factory();
+  factory_ = zzdds_DomainParticipantFactory_create();
   if (factory_ == nullptr) {
     return false;
   }
@@ -87,7 +87,7 @@ bool DdsContext::reset() noexcept
     participant_ = nullptr;
   }
   if (factory_ != nullptr) {
-    zzdds_destroy_factory(factory_);
+    success = zzdds_DomainParticipantFactory_destroy(factory_) == DDS_RETCODE_OK && success;
     factory_ = nullptr;
   }
   dds_factory_ = nullptr;

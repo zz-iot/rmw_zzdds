@@ -13,8 +13,8 @@ set and [docs/architecture.md](docs/architecture.md) for the design boundaries.
 ## Development baseline
 
 The current baseline is ROS 2 Rolling at the revisions recorded in
-`ci/rolling.repos`, zzdds release `v0.3.12-zig.0.17.0`, and the zidl release it
-pins, `v0.3.33-zig.0.17.0`. zzdds is built with its C and C++ bindings enabled.
+`ci/rolling.repos`, zzdds release `v0.3.13-zig.0.17.1`, and the zidl release it
+pins, `v0.3.37-zig.0.17.1`. zzdds is built with its C and C++ bindings enabled.
 The former `zzdds-examples` repository has been folded into zzdds and is no
 longer a separate dependency.
 
