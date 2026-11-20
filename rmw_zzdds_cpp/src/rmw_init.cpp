@@ -87,7 +87,7 @@ bool DdsContext::reset() noexcept
     participant_ = nullptr;
   }
   if (factory_ != nullptr) {
-    success = zzdds_DomainParticipantFactory_destroy(factory_) == DDS_RETCODE_OK && success;
+    zzdds_DomainParticipantFactory_release(factory_);
     factory_ = nullptr;
   }
   dds_factory_ = nullptr;
