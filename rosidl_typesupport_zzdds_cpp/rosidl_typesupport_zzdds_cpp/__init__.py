@@ -359,10 +359,12 @@ def _read_value(type_, expression, indent, counter):
     raise RuntimeError(f'unsupported ROS IDL field type: {type_!r}')
 
 
-def deserialize_members(message, indent=2):
+def deserialize_members(message, indent=2, keys_only=False):
     lines = []
     counter = [0]
     for member in message.structure.members:
+        if keys_only and not member.has_annotation('key'):
+            continue
         lines.extend(_read_value(
             member.type, f'ros_message.{member.name}', indent, counter))
     return '\n'.join(lines)
@@ -579,10 +581,12 @@ def _c_read_value(type_, expression, indent, counter):
     raise RuntimeError(f'unsupported ROS C IDL field type: {type_!r}')
 
 
-def c_deserialize_members(message, indent=2):
+def c_deserialize_members(message, indent=2, keys_only=False):
     lines = []
     counter = [0]
     for member in message.structure.members:
+        if keys_only and not member.has_annotation('key'):
+            continue
         lines.extend(_c_read_value(
             member.type, f'ros_message.{member.name}', indent, counter))
     return '\n'.join(lines)

@@ -58,6 +58,9 @@ struct message_type_support_callbacks_t
 
   /// Resolve a top-level scalar or string field from serialized CDR for CFT evaluation.
   zzdds_get_field_from_cdr_fn get_field_from_cdr;
+
+  /// Validate an encapsulated sample and compute the hash for keyed types.
+  zzdds_process_sample_fn process_sample_from_cdr;
 };
 
 ROSIDL_TYPESUPPORT_ZZDDS_CPP_PUBLIC

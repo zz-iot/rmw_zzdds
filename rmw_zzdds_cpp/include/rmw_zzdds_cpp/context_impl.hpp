@@ -14,6 +14,7 @@
 #include "rcutils/allocator.h"
 #include "rmw/types.h"
 #include "rmw_dds_common/context.hpp"
+#include "rosidl_runtime_c/type_hash.h"
 
 #include "dcps.h"
 #include "zzdds_c.h"
@@ -82,6 +83,16 @@ struct ContextImpl final
     size_t users;
   };
   std::unordered_map<std::string, SharedTopic> topics;
+  // zzdds owns the registered callback contexts for the participant's lifetime.
+  struct CheckedType
+  {
+    zzdds_process_sample_fn process;
+    zzdds_get_field_from_cdr_fn get_field;
+    rosidl_type_hash_t hash;
+    bool has_key;
+    bool service;
+  };
+  std::unordered_map<std::string, CheckedType *> checked_types;
   std::atomic_size_t active_entities{0U};
   rmw_node_t * graph_node{nullptr};
   bool suppress_graph_updates{false};
