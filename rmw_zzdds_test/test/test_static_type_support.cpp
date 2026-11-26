@@ -1,6 +1,8 @@
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <chrono>
@@ -11,6 +13,9 @@
 #include "rmw/enclave.h"
 #include "rmw/error_handling.h"
 #include "rmw/rmw.h"
+#include "rmw_zzdds_test/msg/byte_arrays.hpp"
+#include "rmw_zzdds_test/msg/detail/byte_arrays__rosidl_typesupport_zzdds_c.h"
+#include "rmw_zzdds_test/msg/detail/byte_arrays__rosidl_typesupport_zzdds_cpp.hpp"
 #include "rmw_zzdds_test/msg/nested_record.hpp"
 #include "rmw_zzdds_test/msg/primitive_record.hpp"
 #include "rmw_zzdds_test/msg/keyed_record.hpp"
@@ -50,6 +55,58 @@ const rosidl_typesupport_zzdds_cpp::message_type_support_callbacks_t * callbacks
       handle->typesupport_identifier);
   return static_cast<
     const rosidl_typesupport_zzdds_cpp::message_type_support_callbacks_t *>(handle->data);
+}
+
+template<typename Message>
+void check_byte_arrays(const rosidl_message_type_support_t * handle)
+{
+  constexpr std::array<uint8_t, 5> bytes = {0x00, 0x80, 0xff, 0x01, 0x7f};
+  constexpr std::array<uint8_t, 3> octets = {0x90, 0x12, 0xfe};
+  constexpr std::array<uint8_t, 12> wire = {
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x80, 0xff, 0x01, 0x7f, 0x90, 0x12, 0xfe,
+  };
+  ASSERT_NE(nullptr, handle);
+  const auto * operations = static_cast<
+    const rosidl_typesupport_zzdds_cpp::message_type_support_callbacks_t *>(handle->data);
+  ASSERT_NE(nullptr, operations);
+  Message input{};
+  std::copy(bytes.begin(), bytes.end(), std::begin(input.bytes));
+  std::copy(octets.begin(), octets.end(), std::begin(input.octets));
+
+  std::array<uint8_t, wire.size()> buffer{};
+  ZidlCdrWriter writer{};
+  zidl_cdr_writer_init_fixed(&writer, buffer.data(), buffer.size(), ZIDL_XCDR1);
+  ASSERT_TRUE(operations->serialize(&input, &writer));
+  EXPECT_EQ(wire.size(), writer.len);
+  EXPECT_EQ(wire, buffer);
+  EXPECT_EQ(wire.size(), operations->get_serialized_size(&input));
+
+  ZidlCdrReader reader{};
+  Message output{};
+  ASSERT_EQ(ZIDL_CDR_OK, zidl_cdr_reader_init(&reader, wire.data(), wire.size()));
+  ASSERT_TRUE(operations->deserialize(&reader, &output));
+  EXPECT_EQ(wire.size(), reader.pos);
+  EXPECT_TRUE(std::equal(bytes.begin(), bytes.end(), std::begin(output.bytes)));
+  EXPECT_TRUE(std::equal(octets.begin(), octets.end(), std::begin(output.octets)));
+
+  for (const size_t cut : {wire.size() - octets.size() - 1, wire.size() - 1}) {
+    ASSERT_EQ(ZIDL_CDR_OK, zidl_cdr_reader_init(&reader, wire.data(), cut));
+    EXPECT_FALSE(operations->deserialize(&reader, &output)) << "input length " << cut;
+  }
+}
+
+TEST(StaticTypeSupport, fixed_byte_arrays_cpp)
+{
+  using Message = rmw_zzdds_test::msg::ByteArrays;
+  check_byte_arrays<Message>(
+    rosidl_typesupport_zzdds_cpp::get_message_type_support_handle<Message>());
+}
+
+TEST(StaticTypeSupport, fixed_byte_arrays_c)
+{
+  check_byte_arrays<rmw_zzdds_test__msg__ByteArrays>(
+    ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
+      rosidl_typesupport_zzdds_c, rmw_zzdds_test, msg, ByteArrays)());
 }
 
 TEST(StaticTypeSupport, serializes_independent_xcdr1_golden_vector)

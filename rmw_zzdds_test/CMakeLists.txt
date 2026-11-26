@@ -3,9 +3,11 @@ project(rmw_zzdds_test VERSION 0.1.0 LANGUAGES C CXX)
 
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(rosidl_typesupport_zzdds_c REQUIRED)
 find_package(rosidl_typesupport_zzdds_cpp REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/ByteArrays.idl"
   "msg/KeyedRecord.idl"
   "msg/PrimitiveRecord.msg"
   "msg/NestedRecord.msg"
@@ -26,11 +28,14 @@ if(BUILD_TESTING)
     zzdds_typesupport_target ${PROJECT_NAME} rosidl_typesupport_zzdds_cpp)
   rosidl_get_typesupport_target(
     cpp_typesupport_target ${PROJECT_NAME} rosidl_typesupport_cpp)
+  rosidl_get_typesupport_target(
+    zzdds_c_typesupport_target ${PROJECT_NAME} rosidl_typesupport_zzdds_c)
   ament_add_gtest(test_static_type_support test/test_static_type_support.cpp)
   if(TARGET test_static_type_support)
     target_compile_features(test_static_type_support PRIVATE cxx_std_17)
     target_link_libraries(test_static_type_support
       ${zzdds_typesupport_target}
+      ${zzdds_c_typesupport_target}
       rmw_zzdds_cpp::rmw_zzdds_cpp
       ZZDDS::zzdds)
     set_tests_properties(test_static_type_support PROPERTIES

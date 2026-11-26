@@ -1,0 +1,8 @@
+module rmw_zzdds_test {
+  module msg {
+    struct ByteArrays {
+      uint8 bytes[5];
+      octet octets[3];
+    };
+  };
+};
