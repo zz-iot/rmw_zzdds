@@ -121,6 +121,25 @@ def nested_headers(messages):
     return sorted(result)
 
 
+def _bulk_byte_array(type_, expression, pad, operation, scalar, c_layout=False):
+    element = type_.value_type
+    if not isinstance(element, BasicType) or element.typename not in ('octet', 'uint8'):
+        return scalar
+    if c_layout:
+        data, size = expression, f'sizeof({expression})'
+    else:
+        data, size = f'{expression}.data()', f'{expression}.size()'
+    cursor = 'writer' if operation == 'write' else 'reader'
+    return [
+        '#ifdef ZIDL_CDR_HAS_PRIMITIVE_ARRAYS',
+        f'{pad}if (zidl_cdr_{operation}_u8_array({cursor}, {data}, {size}) '
+        '!= ZIDL_CDR_OK) { return false; }',
+        '#else',
+        *scalar,
+        '#endif',
+    ]
+
+
 def _write_value(type_, expression, indent):
     pad = ' ' * indent
     if isinstance(type_, BasicType):
@@ -166,7 +185,7 @@ def _write_value(type_, expression, indent):
         lines = [f'{pad}for (const auto & element : {expression}) {{']
         lines.extend(_write_value(type_.value_type, 'element', indent + 2))
         lines.append(f'{pad}}}')
-        return lines
+        return _bulk_byte_array(type_, expression, pad, 'write', lines)
     if isinstance(type_, AbstractSequence):
         lines = [
             f'{pad}if ({expression}.size() > UINT32_MAX) {{ return false; }}',
@@ -312,7 +331,7 @@ def _read_value(type_, expression, indent, counter):
         lines = [f'{pad}for (auto & element : {expression}) {{']
         lines.extend(_read_value(type_.value_type, 'element', indent + 2, counter))
         lines.append(f'{pad}}}')
-        return lines
+        return _bulk_byte_array(type_, expression, pad, 'read', lines)
     if isinstance(type_, AbstractSequence):
         size = f'sequence_size_{number}'
         lines = [
@@ -421,7 +440,7 @@ def _c_write_value(type_, expression, indent):
         lines = [f'{pad}for (const auto & element : {expression}) {{']
         lines.extend(_c_write_value(type_.value_type, 'element', indent + 2))
         lines.append(f'{pad}}}')
-        return lines
+        return _bulk_byte_array(type_, expression, pad, 'write', lines, c_layout=True)
     if isinstance(type_, AbstractSequence):
         lines = [
             f'{pad}if ({expression}.size > UINT32_MAX) {{ return false; }}']
@@ -534,7 +553,7 @@ def _c_read_value(type_, expression, indent, counter):
         lines = [f'{pad}for (auto & element : {expression}) {{']
         lines.extend(_c_read_value(type_.value_type, 'element', indent + 2, counter))
         lines.append(f'{pad}}}')
-        return lines
+        return _bulk_byte_array(type_, expression, pad, 'read', lines, c_layout=True)
     if isinstance(type_, AbstractSequence):
         size = f'sequence_size_{number}'
         fini, init = _c_sequence_functions(type_.value_type)
