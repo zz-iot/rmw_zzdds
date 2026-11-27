@@ -91,7 +91,7 @@ bool to_dds_duration(const rmw_time_t * timeout, DDS_Duration_t & result)
 
 extern "C"
 {
-rmw_wait_set_t * rmw_create_wait_set(rmw_context_t * context, size_t max_conditions)
+rmw_wait_set_t * rmw_create_wait_set(rmw_context_t * context, size_t /* max_conditions */)
 {
   if (context == nullptr || context->impl == nullptr) {
     RMW_SET_ERROR_MSG("an initialized context is required");
@@ -114,7 +114,7 @@ rmw_wait_set_t * rmw_create_wait_set(rmw_context_t * context, size_t max_conditi
   }
   const auto allocator = context_impl->allocator;
   auto * impl = rmw_zzdds_cpp::allocate_object<WaitSetImpl>(
-    allocator, WaitSetImpl{context_impl, native, max_conditions});
+    allocator, WaitSetImpl{context_impl, native});
   auto * handle = rmw_zzdds_cpp::allocate_object<rmw_wait_set_t>(allocator);
   if (impl == nullptr || handle == nullptr) {
     rmw_zzdds_cpp::deallocate_object(allocator, handle);
@@ -180,13 +180,14 @@ rmw_ret_t rmw_wait(
     return RMW_RET_INVALID_ARGUMENT;
   }
   auto * impl = static_cast<WaitSetImpl *>(wait_set->data);
+  // The DDS wait set grows on attachment. rcl can add timer guard conditions
+  // beyond the count it supplied when creating the wait set.
   const size_t condition_count =
     subscription_count + guard_count + service_count + client_count + event_count;
   if (condition_count < subscription_count || condition_count < guard_count ||
-    condition_count < service_count || condition_count < client_count || condition_count < event_count ||
-    (impl->max_conditions != 0U && condition_count > impl->max_conditions))
+    condition_count < service_count || condition_count < client_count || condition_count < event_count)
   {
-    RMW_SET_ERROR_MSG("condition count exceeds the wait set capacity");
+    RMW_SET_ERROR_MSG("wait condition count overflow");
     return RMW_RET_INVALID_ARGUMENT;
   }
   DDS_Duration_t timeout{};

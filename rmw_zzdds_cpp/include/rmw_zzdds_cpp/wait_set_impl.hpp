@@ -28,7 +28,6 @@ struct WaitSetImpl final
 {
   ContextImpl * context;
   DDS_WaitSet native;
-  size_t max_conditions;
 };
 
 }  // namespace rmw_zzdds_cpp
