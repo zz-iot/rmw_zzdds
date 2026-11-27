@@ -214,18 +214,28 @@ jobs:
         # --upstream-tests (the script default, spelled out here like --test):
         # also runs the upstream test_rmw_implementation conformance suites
         # against rmw_zzdds_cpp. Adds ~15-25 min. --no-upstream-tests drops it.
+        shell: bash
+        env:
+          MATRIX_NAME: ${{ matrix.name }}
         run: |
+          extra=()
+          case "$MATRIX_NAME" in
+            zzdds-release) extra+=(--ros-integration smoke) ;;
+            zzdds-main-ros-rolling) extra+=(--ros-integration full) ;;
+          esac
           python3 rmw_zzdds/ci/build_and_test.py \
             --rmw-zzdds-src rmw_zzdds --zzdds-src zzdds \
             --ros-target "${{ matrix.ros_target }}" \
-            --workspace "${{ runner.temp }}/rmw-ci-ws" --jobs 4 --test --upstream-tests
+            --workspace "${{ runner.temp }}/rmw-ci-ws" --jobs 4 --test --upstream-tests "${extra[@]}"
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: rmw-zzdds-test-results-${{ matrix.name }}-${{ matrix.ros_target }}
-          path: ${{ runner.temp }}/rmw-ci-ws/ros_ws/build/*/test_results/**/*.xml
+          path: |
+            ${{ runner.temp }}/rmw-ci-ws/ros_ws/build/*/test_results/**/*.xml
+            ${{ runner.temp }}/rmw-ci-ws/ros_ws/integration-results/
           if-no-files-found: ignore
           retention-days: 7
 

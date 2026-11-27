@@ -1,0 +1,12 @@
+# Additional sources for the ROS integration legs.
+# common_interfaces matches the release in the pinned rosdistro snapshot.
+# system_tests has no Rolling release entry. Pin the tested source revision.
+repositories:
+  common_interfaces:
+    type: git
+    url: https://github.com/ros2/common_interfaces.git
+    version: 7c388a3d7d6780fa320df3bfad3cd5e786a371d0
+  system_tests:
+    type: git
+    url: https://github.com/ros2/system_tests.git
+    version: 0bac83b1faeb2e676224df36a847d10dc86ac521

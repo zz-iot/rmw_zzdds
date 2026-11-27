@@ -185,6 +185,17 @@ def build_matrix(mode: str, *, zzdds_ref: str, zzdds_release: str | None) -> lis
     return combos
 
 
+INTEGRATION_PACKAGES = {
+    "smoke": ["test_communication"],
+    "full": ["test_communication", "test_rclcpp", "test_quality_of_service"],
+}
+# These launch tests run zzdds at both endpoints and exercise C++ and Python.
+INTEGRATION_SMOKE_FILTER = (
+    "^test_(requester_replier|action_client_server)__"
+    "rcl(cpp|py)(__rcl(cpp|py))?__rmw_zzdds_cpp$"
+)
+
+
 # ── Small process helpers (bounded, never-hang) ─────────────────────────────
 
 
@@ -369,6 +380,24 @@ def make_workspace(ws: Path, rmw_src: Path, *, rolling_repos: str, ros_setup: Pa
     return ws
 
 
+def add_integration_sources(ws: Path, mode: str, ros_setup: Path) -> None:
+    manifest = ws / "src" / "rmw_zzdds" / "ci" / "rolling-integration.repos"
+    incoming = ws / "integration-src"
+    if incoming.exists():
+        shutil.rmtree(incoming)
+    incoming.mkdir()
+    _bash(
+        f'vcs import "{incoming}" < "{manifest}"',
+        ros_setup=ros_setup, cwd=ws, timeout=900, label="overlay: import ROS integration sources",
+    )
+    # Import only these packages into colcon and rosdep discovery. Other suites
+    # in the source repositories have dependencies unrelated to this job.
+    packages = [incoming / "common_interfaces" / "std_msgs"]
+    packages.extend(incoming / "system_tests" / pkg for pkg in INTEGRATION_PACKAGES[mode])
+    for package in packages:
+        shutil.copytree(package, ws / "src" / package.name)
+
+
 # rosdep scans every package under src/, so the overlaid `rmw_implementation`
 # drags in its `test_depend`s on other vendors' RMWs -- `rmw_connextdds` in
 # particular pulls `rti-connext-dds-*`, whose .deb preinst aborts without an
@@ -425,10 +454,12 @@ def rosdep_install(
     )
 
 
-def _colcon_build_cmd(packages: list[str], zzdds_prefix: Path, *, jobs: int, testing: bool) -> str:
+def _colcon_build_cmd(
+    packages: list[str], zzdds_prefix: Path, *, jobs: int, testing: bool, select: bool = False
+) -> str:
     return (
         f"colcon build "
-        f"--packages-up-to {' '.join(packages)} "
+        f"--packages-{'select' if select else 'up-to'} {' '.join(packages)} "
         f"--event-handlers console_direct+ "
         f"--parallel-workers {jobs} "
         f"--cmake-args "
@@ -605,8 +636,12 @@ def run(args: argparse.Namespace) -> int:
                   flush=True)
             run_upstream = False
 
+        if args.ros_integration and not run_upstream:
+            raise StepError("--ros-integration requires the full overlay and upstream tests")
         zzdds_prefix = build_zzdds(zzdds_src, jobs=args.jobs)
         make_workspace(ros_ws, rmw_src, rolling_repos=args.rolling_repos, ros_setup=ros_setup)
+        if args.ros_integration:
+            add_integration_sources(ros_ws, args.ros_integration, ros_setup)
         if not args.skip_rosdep:
             # The moving-tag leg stays on live rosdistro: it's the early warning
             # for upstream drift.
@@ -620,6 +655,9 @@ def run(args: argparse.Namespace) -> int:
         if run_upstream:
             run_upstream_rmw_tests(ros_ws, zzdds_prefix=zzdds_prefix, ros_setup=ros_setup,
                                    jobs=args.jobs)
+        if args.ros_integration:
+            run_ros_integration(ros_ws, zzdds_prefix, ros_setup=ros_setup, jobs=args.jobs,
+                                mode=args.ros_integration)
     except StepError as e:
         print(f"\nFAIL: {e}", file=sys.stderr)
         return 1
@@ -630,6 +668,63 @@ def run(args: argparse.Namespace) -> int:
     print(f"\n[ok] rmw_zzdds build{tail} passed "
           f"({time.monotonic() - started:.0f}s total)", flush=True)
     return 0
+
+
+def run_ros_integration(
+    ws: Path, zzdds_prefix: Path, *, ros_setup: Path, jobs: int, mode: str
+) -> None:
+    setup = ws / "install" / "setup.bash"
+    interfaces = ["action_msgs", "rcl_interfaces", "rosgraph_msgs", "std_msgs",
+                  "type_description_interfaces"]
+    _bash(
+        _colcon_build_cmd(interfaces, zzdds_prefix, jobs=jobs, testing=False),
+        ros_setup=ros_setup, extra_setup=setup, cwd=ws, timeout=1800,
+        label="colcon build (ROS integration interfaces)",
+    )
+    suites = INTEGRATION_PACKAGES[mode]
+    _bash(
+        _colcon_build_cmd(suites, zzdds_prefix, jobs=jobs, testing=True, select=True),
+        ros_setup=ros_setup, extra_setup=setup, cwd=ws, timeout=1800,
+        label="colcon build (ROS integration suites)",
+    )
+    results = ws / "integration-results"
+    results.mkdir(exist_ok=True)
+    env = f'export LD_LIBRARY_PATH="{zzdds_prefix / "lib"}:${{LD_LIBRARY_PATH:-}}"\n'
+    failures = []
+    for suite in suites:
+        pattern = INTEGRATION_SMOKE_FILTER if mode == "smoke" else "rmw_zzdds_cpp"
+        ctest = f"ctest --test-dir 'build/{suite}' -R '{pattern}'"
+        preflight = ""
+        if mode == "smoke":
+            preflight = (
+                f'count=$({ctest} -N | sed -n "s/^Total Tests: //p")\n'
+                'if [ "$count" != 8 ]; then\n'
+                '  echo "Expected 8 same-RMW action and service targets, found ${count:-0}" >&2\n'
+                '  exit 1\n'
+                'fi\n'
+            )
+        try:
+            _bash(
+                env + preflight + f"{ctest} {f'-j {jobs}' if mode == 'full' else ''} "
+                f"--no-tests=error --output-on-failure --output-junit '{results / (suite + '.xml')}'",
+                ros_setup=ros_setup, extra_setup=setup, cwd=ws, timeout=1800,
+                label=f"ROS integration: {suite}",
+            )
+        except StepError as error:
+            print(f"[error] {error}", file=sys.stderr, flush=True)
+            failures.append(suite)
+    try:
+        _bash(
+            env + "ROS_DOMAIN_ID=119 python3 src/rmw_zzdds/ci/mixed_rmw_smoke.py "
+            f"--output '{results / 'mixed-rmw'}'",
+            ros_setup=ros_setup, extra_setup=setup, cwd=ws, timeout=300,
+            label="ROS integration: mixed RMW delivery",
+        )
+    except StepError as error:
+        print(f"[error] {error}", file=sys.stderr, flush=True)
+        failures.append("mixed RMW delivery")
+    if failures:
+        raise StepError(f"ROS integration failures: {', '.join(failures)}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -665,6 +760,8 @@ def main(argv: list[str] | None = None) -> int:
                             "--rolling-repos overlay + --test)")
     build.add_argument("--no-upstream-tests", dest="upstream_tests", action="store_false",
                        help="skip the upstream test_rmw_implementation conformance suites")
+    build.add_argument("--ros-integration", choices=tuple(INTEGRATION_PACKAGES),
+                       help="run the pinned ROS integration smoke or full system suites")
     build.add_argument("--skip-rosdep", action="store_true",
                        help="assume ROS deps are already installed")
     build.add_argument("--rosdep-skip-keys", default=DEFAULT_ROSDEP_SKIP_KEYS,
