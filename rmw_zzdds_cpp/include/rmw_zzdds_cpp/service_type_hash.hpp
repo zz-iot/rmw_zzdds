@@ -8,6 +8,7 @@
 
 namespace rmw_zzdds_cpp
 {
+constexpr char service_dds_type_suffix[] = "__zzdds_service";
 constexpr size_t service_guid_size = 16;
 constexpr size_t service_request_header_size = service_guid_size + sizeof(int64_t);
 

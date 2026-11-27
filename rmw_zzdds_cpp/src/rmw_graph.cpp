@@ -17,6 +17,7 @@
 #include "rmw/validate_node_name.h"
 #include "rmw/validate_full_topic_name.h"
 
+#include "rmw_zzdds_cpp/service_type_hash.hpp"
 #include "rmw_zzdds_cpp/context_impl.hpp"
 #include "rmw_zzdds_cpp/graph_discovery.hpp"
 #include "rmw_zzdds_cpp/identifier.hpp"
@@ -102,7 +103,14 @@ std::string demangle_dds_type(const std::string & dds_type)
 
 std::string demangle_dds_service_type(const std::string & dds_type)
 {
-  std::string result = demangle_dds_type(dds_type);
+  constexpr auto & wire_suffix = rmw_zzdds_cpp::service_dds_type_suffix;
+  constexpr size_t wire_suffix_size = sizeof(wire_suffix) - 1;
+  const size_t wire_suffix_start = dds_type.size() >= wire_suffix_size ?
+    dds_type.size() - wire_suffix_size : std::string::npos;
+  const bool has_wire_suffix = wire_suffix_start != std::string::npos &&
+    dds_type.compare(wire_suffix_start, wire_suffix_size, wire_suffix) == 0;
+  std::string result = demangle_dds_type(
+    has_wire_suffix ? dds_type.substr(0, wire_suffix_start) : dds_type);
   constexpr const char * suffixes[] = {"_Request", "_Response"};
   for (const char * suffix : suffixes) {
     const size_t suffix_size = std::strlen(suffix);
