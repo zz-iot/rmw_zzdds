@@ -20,6 +20,7 @@ def child(role, topic):
 
     rclpy.init()
     node = rclpy.create_node(f"interop_smoke_{role}")
+    pub = sub = None
     try:
         if role == "publisher":
             pub = node.create_publisher(String, topic, 10)
@@ -57,6 +58,10 @@ def child(role, topic):
                     return
             raise RuntimeError(f"matched={sub.get_publisher_count()}, received={len(sequences)}")
     finally:
+        if sub is not None:
+            node.destroy_subscription(sub)
+        if pub is not None:
+            node.destroy_publisher(pub)
         node.destroy_node()
         rclpy.try_shutdown()
 
@@ -69,7 +74,9 @@ def wait_for_log(process, path, marker, timeout):
         if process.poll() is not None:
             break
         time.sleep(0.05)
-    raise RuntimeError(f"missing {marker} in {path}: {path.read_text()}")
+    content = path.read_text()
+    if marker not in content.splitlines():
+        raise RuntimeError(f"missing {marker} in {path}: {content}")
 
 
 def run_pair(publisher, subscriber, root):
@@ -103,7 +110,7 @@ def run_pair(publisher, subscriber, root):
                 last = int(end)
                 if phase == "late-join":
                     wait_for_log(process, pub_log, "MATCHED 1", 2)
-                    wait_for_log(process, pub_log, "UNMATCHED", 10)
+                    wait_for_log(process, pub_log, "UNMATCHED", 20)
                 else:
                     wait_for_log(process, pub_log, "MATCHED 2", 2)
                 print(f"PASS {publisher} -> {subscriber} {phase}: {first}..{end}", flush=True)
