@@ -68,15 +68,20 @@ def generate_c(generator_arguments_file: str) -> List[str]:
     return generate_files(generator_arguments_file, mapping)
 
 
+def all_services(content):
+    services = list(content.get_elements_of_type(Service))
+    for action in content.get_elements_of_type(Action):
+        services.extend([action.send_goal_service, action.get_result_service])
+    return services
+
+
 def all_messages(content):
     messages = list(content.get_elements_of_type(Message))
-    services = list(content.get_elements_of_type(Service))
     for action in content.get_elements_of_type(Action):
         messages.extend([
             action.goal, action.result, action.feedback,
             action.feedback_message])
-        services.extend([action.send_goal_service, action.get_result_service])
-    for service in services:
+    for service in all_services(content):
         messages.extend([
             service.request_message,
             service.response_message,

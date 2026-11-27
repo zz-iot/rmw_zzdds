@@ -1,5 +1,6 @@
 @{
 from rosidl_typesupport_zzdds_cpp import all_messages
+from rosidl_typesupport_zzdds_cpp import all_services
 from rosidl_typesupport_zzdds_cpp import c_symbol
 from rosidl_typesupport_zzdds_cpp import dds_type_name
 from rosidl_typesupport_zzdds_cpp import deserialize_members
@@ -7,10 +8,9 @@ from rosidl_typesupport_zzdds_cpp import filter_field_cases
 from rosidl_typesupport_zzdds_cpp import has_key
 from rosidl_typesupport_zzdds_cpp import nested_headers
 from rosidl_typesupport_zzdds_cpp import serialize_members
-from rosidl_parser.definition import Service
 from rosidl_pycommon import convert_camel_case_to_lower_case_underscore
 messages = all_messages(content)
-services = list(content.get_elements_of_type(Service))
+services = all_services(content)
 stem = convert_camel_case_to_lower_case_underscore(interface_path.stem)
 base = '/'.join([package_name] + list(interface_path.parents[0].parts) + ['detail', stem])
 }@
@@ -251,6 +251,7 @@ ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
 service_type = service.namespaced_type
 service_namespaces = list(service_type.namespaces)
 service_symbol = c_symbol(service_type)
+service_stem = convert_camel_case_to_lower_case_underscore(service_type.name)
 request_stem = convert_camel_case_to_lower_case_underscore(service.request_message.structure.namespaced_type.name)
 response_stem = convert_camel_case_to_lower_case_underscore(service.response_message.structure.namespaced_type.name)
 event_stem = convert_camel_case_to_lower_case_underscore(service.event_message.structure.namespaced_type.name)
@@ -261,7 +262,7 @@ namespace @(namespace)
 @[end for]@
 namespace typesupport_zzdds_cpp
 {
-static const rosidl_service_type_support_t handle_@(stem) = {
+static const rosidl_service_type_support_t handle_@(service_stem) = {
   rosidl_typesupport_zzdds_cpp::typesupport_identifier,
   nullptr,
   rosidl_typesupport_zzdds_cpp::get_service_typesupport_handle_function,
@@ -286,6 +287,6 @@ ROSIDL_TYPESUPPORT_INTERFACE__SERVICE_SYMBOL_NAME(
   rosidl_typesupport_zzdds_cpp,
   @(', '.join(service_type.namespaced_name())))()
 {
-  return &@('::'.join(service_namespaces))::typesupport_zzdds_cpp::handle_@(stem);
+  return &@('::'.join(service_namespaces))::typesupport_zzdds_cpp::handle_@(service_stem);
 }
 @[end for]@
