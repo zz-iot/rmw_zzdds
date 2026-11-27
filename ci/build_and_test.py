@@ -386,6 +386,7 @@ def add_integration_sources(ws: Path, mode: str, ros_setup: Path) -> None:
     if incoming.exists():
         shutil.rmtree(incoming)
     incoming.mkdir()
+    (incoming / "COLCON_IGNORE").touch()
     _bash(
         f'vcs import "{incoming}" < "{manifest}"',
         ros_setup=ros_setup, cwd=ws, timeout=900, label="overlay: import ROS integration sources",
