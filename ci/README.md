@@ -105,3 +105,16 @@ alongside `--zzdds-src`. The runner copies it into the scratch workspace as a
 sibling of zzdds so a `../zidl` package dependency resolves. CI selects Zig from
 the checked-out zzdds manifest; the older-release matrix lane keeps its matching
 compiler until that release pin is advanced.
+
+## Mixed-vendor smoke test
+
+From a sourced ROS workspace with `rclpy`, all three DDS RMWs, and zzdds
+typesupport for `std_msgs`, run:
+
+```sh
+ROS_DOMAIN_ID=119 python3 ci/mixed_rmw_smoke.py --output /tmp/rmw-mixed-smoke
+```
+
+The test pairs zzdds with Fast DDS and Cyclone DDS in both directions. A
+reliable 1 KiB publisher starts first, then two successive subscriber processes
+verify matching and increasing sample sequences across a late join and restart.
