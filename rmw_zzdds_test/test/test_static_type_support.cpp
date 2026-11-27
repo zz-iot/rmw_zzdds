@@ -284,6 +284,17 @@ TEST(StaticTypeSupport, rmw_serialization_adapter_round_trips_and_rejects_bad_in
     << rmw_get_error_string().str;
   EXPECT_EQ(original, result);
 
+  auto borrowed = rmw_get_zero_initialized_serialized_message();
+  borrowed.buffer = serialized.buffer;
+  borrowed.buffer_length = serialized.buffer_length;
+  borrowed.buffer_capacity = serialized.buffer_length;
+  result = {};
+  EXPECT_EQ(RMW_RET_OK, rmw_deserialize(&borrowed, handle, &result));
+  EXPECT_EQ(original, result);
+  --borrowed.buffer_capacity;
+  EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, rmw_deserialize(&borrowed, handle, &result));
+  rmw_reset_error();
+
   const size_t full_length = serialized.buffer_length;
   serialized.buffer_length = full_length - 1;
   EXPECT_EQ(RMW_RET_ERROR, rmw_deserialize(&serialized, handle, &result));

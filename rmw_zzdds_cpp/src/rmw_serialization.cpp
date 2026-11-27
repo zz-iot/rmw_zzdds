@@ -83,7 +83,11 @@ rmw_ret_t rmw_deserialize(
     RMW_SET_ERROR_MSG("a ROS message is required");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  if (!valid_serialized_message(serialized_message) || serialized_message->buffer_length < 4) {
+  // rclpy can pass a borrowed byte buffer. Deserialization does not allocate into it.
+  if (serialized_message == nullptr || serialized_message->buffer == nullptr ||
+    serialized_message->buffer_length < 4 ||
+    serialized_message->buffer_length > serialized_message->buffer_capacity)
+  {
     RMW_SET_ERROR_MSG("an initialized serialized message containing CDR data is required");
     return RMW_RET_INVALID_ARGUMENT;
   }
