@@ -9,7 +9,7 @@ find_package(rosidl_typesupport_zzdds_cpp REQUIRED)
 find_package(rosidl_typesupport_zzdds_c REQUIRED)
 find_package(ZZDDS CONFIG REQUIRED)
 
-# rmw_zzdds_cpp needs zzdds >= v0.3.13-zig.0.17.1: rmw_service_server_is_available's
+# rmw_zzdds_cpp needs zzdds >= v0.3.14-zig.0.17.1: rmw_service_server_is_available's
 # readiness tracking installs zzdds's on_reliable_writer_ready listener at reader
 # creation via zzdds_Subscriber_create_datareader_ex (added in v0.3.4); v0.3.5
 # fixes matches and publisher GUIDs that service availability and take depend
@@ -20,13 +20,13 @@ find_package(ZZDDS CONFIG REQUIRED)
 # which replace zzdds_create_waitset and friends; and v0.3.13 generates
 # zzdds_DomainParticipantFactory_create/_destroy, which replace
 # zzdds_create_factory/zzdds_destroy_factory (see README.md's Development
-# baseline). ZZDDS_VERSION (from zzdds's own build.zig.zon) looks
+# baseline). v0.3.14 provides checked sample admission. ZZDDS_VERSION (from zzdds's own build.zig.zon) looks
 # like "0.3.6-zig.0.16.0", with "-dev" on development builds, so compare its
 # leading MAJOR.MINOR.PATCH. The symbol probes below also catch a build whose
 # version string can't be parsed. Failing here, at
 # configure time, beats an older zzdds producing a confusing compile error or
 # runtime failure later.
-set(_zzdds_min_version "0.3.13")
+set(_zzdds_min_version "0.3.14")
 string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" _zzdds_numeric_version "${ZZDDS_VERSION}")
 if(_zzdds_numeric_version AND _zzdds_numeric_version VERSION_LESS _zzdds_min_version)
   message(FATAL_ERROR

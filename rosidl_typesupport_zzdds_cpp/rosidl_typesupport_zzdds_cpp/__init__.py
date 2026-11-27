@@ -68,15 +68,20 @@ def generate_c(generator_arguments_file: str) -> List[str]:
     return generate_files(generator_arguments_file, mapping)
 
 
+def all_services(content):
+    services = list(content.get_elements_of_type(Service))
+    for action in content.get_elements_of_type(Action):
+        services.extend([action.send_goal_service, action.get_result_service])
+    return services
+
+
 def all_messages(content):
     messages = list(content.get_elements_of_type(Message))
-    services = list(content.get_elements_of_type(Service))
     for action in content.get_elements_of_type(Action):
         messages.extend([
             action.goal, action.result, action.feedback,
             action.feedback_message])
-        services.extend([action.send_goal_service, action.get_result_service])
-    for service in services:
+    for service in all_services(content):
         messages.extend([
             service.request_message,
             service.response_message,
@@ -359,10 +364,12 @@ def _read_value(type_, expression, indent, counter):
     raise RuntimeError(f'unsupported ROS IDL field type: {type_!r}')
 
 
-def deserialize_members(message, indent=2):
+def deserialize_members(message, indent=2, keys_only=False):
     lines = []
     counter = [0]
     for member in message.structure.members:
+        if keys_only and not member.has_annotation('key'):
+            continue
         lines.extend(_read_value(
             member.type, f'ros_message.{member.name}', indent, counter))
     return '\n'.join(lines)
@@ -579,10 +586,12 @@ def _c_read_value(type_, expression, indent, counter):
     raise RuntimeError(f'unsupported ROS C IDL field type: {type_!r}')
 
 
-def c_deserialize_members(message, indent=2):
+def c_deserialize_members(message, indent=2, keys_only=False):
     lines = []
     counter = [0]
     for member in message.structure.members:
+        if keys_only and not member.has_annotation('key'):
+            continue
         lines.extend(_c_read_value(
             member.type, f'ros_message.{member.name}', indent, counter))
     return '\n'.join(lines)

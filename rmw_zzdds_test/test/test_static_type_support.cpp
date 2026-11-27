@@ -20,6 +20,7 @@
 #include "rmw_zzdds_test/msg/primitive_record.hpp"
 #include "rmw_zzdds_test/msg/keyed_record.hpp"
 #include "rmw_zzdds_test/msg/detail/keyed_record__rosidl_typesupport_zzdds_cpp.hpp"
+#include "rmw_zzdds_test/msg/detail/keyed_record__rosidl_typesupport_zzdds_c.h"
 #include "rmw_zzdds_test/msg/detail/nested_record__rosidl_typesupport_zzdds_cpp.hpp"
 #include "rmw_zzdds_test/msg/detail/primitive_record__rosidl_typesupport_zzdds_cpp.hpp"
 #include "rosidl_typesupport_zzdds_cpp/identifier.hpp"
@@ -89,9 +90,21 @@ void check_byte_arrays(const rosidl_message_type_support_t * handle)
   EXPECT_TRUE(std::equal(bytes.begin(), bytes.end(), std::begin(output.bytes)));
   EXPECT_TRUE(std::equal(octets.begin(), octets.end(), std::begin(output.octets)));
 
+  ASSERT_NE(nullptr, operations->process_sample_from_cdr);
+  std::array<uint8_t, 16> hash{};
+  hash.fill(0xff);
+  EXPECT_EQ(0, operations->process_sample_from_cdr(wire.data(), wire.size(), 0, hash.data()));
+  EXPECT_TRUE(std::all_of(hash.begin(), hash.end(), [](uint8_t value) {return value == 0;}));
+  EXPECT_NE(0, operations->process_sample_from_cdr(wire.data(), wire.size(), 1, hash.data()));
+
+  // Peers can retain trailing wire bytes after the decoded fields.
+  std::array<uint8_t, wire.size() + 8> padded{};
+  std::copy(wire.begin(), wire.end(), padded.begin());
+  EXPECT_EQ(0, operations->process_sample_from_cdr(padded.data(), padded.size(), 0, hash.data()));
   for (const size_t cut : {wire.size() - octets.size() - 1, wire.size() - 1}) {
     ASSERT_EQ(ZIDL_CDR_OK, zidl_cdr_reader_init(&reader, wire.data(), cut));
     EXPECT_FALSE(operations->deserialize(&reader, &output)) << "input length " << cut;
+    EXPECT_NE(0, operations->process_sample_from_cdr(wire.data(), cut, 0, hash.data()));
   }
 }
 
@@ -226,6 +239,28 @@ TEST(StaticTypeSupport, computes_canonical_big_endian_key_hash)
     0x00, 0x00, 0x00, 0x00,
   };
   EXPECT_EQ(expected, hash);
+
+  const auto * c_handle = ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
+    rosidl_typesupport_zzdds_c, rmw_zzdds_test, msg, KeyedRecord)();
+  ASSERT_NE(nullptr, c_handle);
+  const auto * c_operations = static_cast<
+    const rosidl_typesupport_zzdds_cpp::message_type_support_callbacks_t *>(c_handle->data);
+  ASSERT_NE(nullptr, c_operations);
+  constexpr std::array<uint8_t, 8> key_only = {0, 0, 0, 0, 1, 2, 3, 4};
+  std::array<uint8_t, 128> wire{};
+  ZidlCdrWriter writer{};
+  zidl_cdr_writer_init_fixed(&writer, wire.data(), wire.size(), ZIDL_XCDR1);
+  ASSERT_TRUE(operations->serialize(&message, &writer));
+  for (const auto * binding : {operations, c_operations}) {
+    const auto process = binding->process_sample_from_cdr;
+    ASSERT_NE(nullptr, process);
+    EXPECT_EQ(0, process(key_only.data(), key_only.size(), 1, hash.data()));
+    EXPECT_EQ(expected, hash);
+    EXPECT_NE(0, process(key_only.data(), key_only.size(), 0, hash.data()));
+    EXPECT_EQ(0, process(wire.data(), writer.len, 0, hash.data()));
+    EXPECT_EQ(expected, hash);
+    EXPECT_NE(0, process(wire.data(), writer.len - 1, 0, hash.data()));
+  }
 }
 
 TEST(StaticTypeSupport, rmw_serialization_adapter_round_trips_and_rejects_bad_input)
@@ -248,6 +283,17 @@ TEST(StaticTypeSupport, rmw_serialization_adapter_round_trips_and_rejects_bad_in
   ASSERT_EQ(RMW_RET_OK, rmw_deserialize(&serialized, handle, &result))
     << rmw_get_error_string().str;
   EXPECT_EQ(original, result);
+
+  auto borrowed = rmw_get_zero_initialized_serialized_message();
+  borrowed.buffer = serialized.buffer;
+  borrowed.buffer_length = serialized.buffer_length;
+  borrowed.buffer_capacity = serialized.buffer_length;
+  result = {};
+  EXPECT_EQ(RMW_RET_OK, rmw_deserialize(&borrowed, handle, &result));
+  EXPECT_EQ(original, result);
+  --borrowed.buffer_capacity;
+  EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, rmw_deserialize(&borrowed, handle, &result));
+  rmw_reset_error();
 
   const size_t full_length = serialized.buffer_length;
   serialized.buffer_length = full_length - 1;
@@ -385,6 +431,18 @@ TEST(StaticTypeSupport, rmw_publisher_subscription_round_trip)
   ASSERT_TRUE(taken);
   EXPECT_EQ(outbound.buffer_length, inbound.buffer_length);
   EXPECT_EQ(0, std::memcmp(outbound.buffer, inbound.buffer, outbound.buffer_length));
+
+  // A malformed wire sample must never become available, even to serialized take.
+  --outbound.buffer_length;
+  ASSERT_EQ(RMW_RET_OK, rmw_publish_serialized_message(publisher, &outbound, nullptr));
+  subscription_entries[0] = subscription->data;
+  const rmw_time_t malformed_timeout{0U, 200000000U};
+  EXPECT_EQ(
+    RMW_RET_TIMEOUT,
+    rmw_wait(&subscriptions, nullptr, nullptr, nullptr, nullptr, wait_set, &malformed_timeout));
+  ASSERT_EQ(
+    RMW_RET_OK, rmw_take_serialized_message(subscription, &inbound, &taken, nullptr));
+  EXPECT_FALSE(taken);
   EXPECT_EQ(RMW_RET_OK, rmw_serialized_message_fini(&inbound));
   EXPECT_EQ(RMW_RET_OK, rmw_serialized_message_fini(&outbound));
 

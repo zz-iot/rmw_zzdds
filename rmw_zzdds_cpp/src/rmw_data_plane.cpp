@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <new>
 #include <string>
 #include <vector>
@@ -146,6 +147,9 @@ bool apply_qos(const rmw_qos_profile_t & source, Qos & target)
       RMW_SET_ERROR_MSG("unsupported or unspecified liveliness policy");
       return false;
   }
+  // The generated ROS typesupport reads and writes XCDR1 payloads.
+  static DDS_DataRepresentationId_t xcdr1 = DDS_XCDR_DATA_REPRESENTATION;
+  target.data_representation.value = {1, 1, &xcdr1, false};
   return true;
 }
 
@@ -304,6 +308,81 @@ rosidl_type_hash_t type_hash_of(const rosidl_message_type_support_t * type_suppo
     if (hash != nullptr) {result = *hash;}
   }
   return result;
+}
+
+int process_checked_sample(
+  void * opaque, const uint8_t * payload, size_t size, int key_only, uint8_t hash[16])
+{
+  const auto & type = *static_cast<const ContextImpl::CheckedType *>(opaque);
+  if (type.service) {
+    constexpr auto prefix = rmw_zzdds_cpp::service_request_header_size;
+    if (payload == nullptr || size <= prefix || key_only != 0) {
+      return -1;
+    }
+    payload += prefix;
+    size -= prefix;
+  }
+  return type.process(payload, size, key_only, hash);
+}
+
+bool get_checked_field(
+  void * opaque, const uint8_t * payload, size_t size, const char * field,
+  size_t field_len, zzdds_filter_value * out, uint8_t * scratch, size_t scratch_len)
+{
+  const auto & type = *static_cast<const ContextImpl::CheckedType *>(opaque);
+  return type.get_field(payload, size, field, field_len, out, scratch, scratch_len);
+}
+
+bool register_checked_type(
+  ContextImpl & context, const rosidl_typesupport_zzdds_cpp::message_type_support_callbacks_t & callbacks,
+  const rosidl_message_type_support_t * type_support, std::string & dds_type_name)
+{
+  const auto * service_hash = rmw_zzdds_cpp::service_type_hash_override();
+  const bool service = service_hash != nullptr;
+  const auto hash = service ? *service_hash : type_hash_of(type_support);
+  if (callbacks.process_sample_from_cdr == nullptr || (service && callbacks.has_key)) {
+    RMW_SET_ERROR_MSG("zzdds checked typesupport is missing or cannot handle this service type");
+    return false;
+  }
+  try {
+    dds_type_name = callbacks.dds_type_name;
+    if (service) {
+      dds_type_name += rmw_zzdds_cpp::service_dds_type_suffix;
+    }
+    const auto existing = context.checked_types.find(dds_type_name);
+    if (existing != context.checked_types.end()) {
+      // C and C++ layouts can differ while describing the same wire type.
+      const auto & registered = *existing->second;
+      if (registered.has_key == callbacks.has_key && registered.service == service &&
+        registered.hash.version == hash.version &&
+        std::memcmp(registered.hash.value, hash.value, sizeof(hash.value)) == 0)
+      {
+        return true;
+      }
+      RMW_SET_ERROR_MSG("conflicting zzdds type registration");
+      return false;
+    }
+    auto registered = std::make_unique<ContextImpl::CheckedType>(ContextImpl::CheckedType{
+      callbacks.process_sample_from_cdr, callbacks.get_field_from_cdr, hash,
+      callbacks.has_key, service});
+    const auto position =
+      context.checked_types.emplace(dds_type_name, registered.get()).first;
+    if (zzdds_register_type_support_checked_ctx(
+        context.dds.participant(), dds_type_name.c_str(), process_checked_sample,
+        callbacks.has_key, !service && callbacks.get_field_from_cdr ? get_checked_field : nullptr,
+        registered.get(), [](void * opaque) {delete static_cast<ContextImpl::CheckedType *>(opaque);})
+      == 0)
+    {
+      (void)registered.release();
+      return true;
+    }
+    context.checked_types.erase(position);
+  } catch (const std::bad_alloc &) {
+    RMW_SET_ERROR_MSG("failed to allocate zzdds checked type registration");
+    return false;
+  }
+  RMW_SET_ERROR_MSG("failed to register zzdds checked type support");
+  return false;
 }
 
 template<typename DdsQos>
@@ -612,13 +691,11 @@ rmw_publisher_t * rmw_create_publisher(
     RMW_SET_ERROR_MSG("cannot create a publisher after context shutdown");
     return nullptr;
   }
-  if (zzdds_register_type_support(context->dds.participant(), callbacks->dds_type_name, nullptr,
-      nullptr, callbacks->get_field_from_cdr) != 0)
-  {
-    RMW_SET_ERROR_MSG("failed to register zzdds type support");
+  std::string dds_type_name;
+  if (!register_checked_type(*context, *callbacks, type_support, dds_type_name)) {
     return nullptr;
   }
-  DDS_Topic topic = acquire_topic(context, dds_name.data(), callbacks->dds_type_name);
+  DDS_Topic topic = acquire_topic(context, dds_name.data(), dds_type_name.c_str());
   if (topic == nullptr) {
     return nullptr;
   }
@@ -683,7 +760,7 @@ rmw_publisher_t * rmw_create_publisher(
     context->publishers.insert(result);
     if (!context->suppress_graph_updates) {
       context->common.graph_cache.add_entity(
-        publisher_gid, dds_name.data(), callbacks->dds_type_name, type_hash,
+        publisher_gid, dds_name.data(), dds_type_name.c_str(), type_hash,
         context->participant_gid, actual_qos, false,
         rmw_zzdds_cpp::service_type_hash_override());
       if (context->common.add_publisher_graph(publisher_gid, node->name, node->namespace_) !=
@@ -992,13 +1069,11 @@ rmw_subscription_t * rmw_create_subscription(
     RMW_SET_ERROR_MSG("cannot create a subscription after context shutdown");
     return nullptr;
   }
-  if (zzdds_register_type_support(context->dds.participant(), callbacks->dds_type_name, nullptr,
-      nullptr, callbacks->get_field_from_cdr) != 0)
-  {
-    RMW_SET_ERROR_MSG("failed to register zzdds type support");
+  std::string dds_type_name;
+  if (!register_checked_type(*context, *callbacks, type_support, dds_type_name)) {
     return nullptr;
   }
-  DDS_Topic topic = acquire_topic(context, dds_name.data(), callbacks->dds_type_name);
+  DDS_Topic topic = acquire_topic(context, dds_name.data(), dds_type_name.c_str());
   if (topic == nullptr) {return nullptr;}
   DDS_DataReaderQos dds_qos{};
   DDS_DataReaderQos_default(&dds_qos);
@@ -1105,7 +1180,7 @@ rmw_subscription_t * rmw_create_subscription(
     context->subscriptions.insert(result);
     if (!context->suppress_graph_updates) {
       context->common.graph_cache.add_entity(
-        subscription_gid, dds_name.data(), callbacks->dds_type_name, type_hash,
+        subscription_gid, dds_name.data(), dds_type_name.c_str(), type_hash,
         context->participant_gid, actual_qos, true,
         rmw_zzdds_cpp::service_type_hash_override());
       if (context->common.add_subscriber_graph(subscription_gid, node->name, node->namespace_) !=

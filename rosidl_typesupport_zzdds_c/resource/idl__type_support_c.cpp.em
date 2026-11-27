@@ -1,5 +1,6 @@
 @{
 from rosidl_typesupport_zzdds_cpp import all_messages
+from rosidl_typesupport_zzdds_cpp import all_services
 from rosidl_typesupport_zzdds_cpp import c_deserialize_members
 from rosidl_typesupport_zzdds_cpp import c_serialize_members
 from rosidl_typesupport_zzdds_cpp import c_symbol
@@ -7,10 +8,9 @@ from rosidl_typesupport_zzdds_cpp import dds_type_name
 from rosidl_typesupport_zzdds_cpp import filter_field_cases
 from rosidl_typesupport_zzdds_cpp import has_key
 from rosidl_typesupport_zzdds_cpp import nested_headers
-from rosidl_parser.definition import Service
 from rosidl_pycommon import convert_camel_case_to_lower_case_underscore
 messages = all_messages(content)
-services = list(content.get_elements_of_type(Service))
+services = all_services(content)
 stem = convert_camel_case_to_lower_case_underscore(interface_path.stem)
 base = '/'.join([package_name] + list(interface_path.parents[0].parts) + ['detail', stem])
 }@
@@ -149,12 +149,57 @@ static bool compute_key_hash_@(message_stem)(const void * untyped, uint8_t hash[
   }
   zidl_cdr_writer_set_byte_order(writer, ZIDL_CDR_BE);
   const auto & ros_message = *static_cast<const @(ctype) *>(untyped);
-@(c_serialize_members(message, indent=2, keys_only=True))
-  zidl_cdr_compute_key_hash(writer->buf, writer->len, hash);
+  const bool encoded = [&]() {
+@(c_serialize_members(message, indent=4, keys_only=True))
+    return true;
+  }();
+  if (encoded) {
+    zidl_cdr_compute_key_hash(writer->buf, writer->len, hash);
+  }
   zidl_cdr_writer_deinit(writer);
-  return true;
+  return encoded;
 }
 @[end if]@
+
+static int process_sample_from_cdr_@(message_stem)(
+  const uint8_t * payload, size_t payload_len, int key_only, uint8_t hash[16])
+{
+  ZidlCdrReader state{};
+  auto * reader = &state;
+  if (payload == nullptr || hash == nullptr ||
+    zidl_cdr_reader_init(reader, payload, payload_len) != ZIDL_CDR_OK ||
+    reader->xcdr_version != ZIDL_XCDR1)
+  {
+    return -1;
+  }
+  @(ctype) ros_message{};
+  if (!@(ctype)__init(&ros_message)) {
+    return -1;
+  }
+  const bool decoded = [&]() {
+@[if keyed]@
+    if (key_only != 0) {
+@(c_deserialize_members(message, indent=6, keys_only=True))
+      return true;
+    }
+@[else]@
+    if (key_only != 0) {
+      return false;
+    }
+@[end if]@
+    return cdr_deserialize(reader, ros_message);
+  }();
+@[if keyed]@
+  const bool accepted = decoded && compute_key_hash_@(message_stem)(&ros_message, hash);
+@[else]@
+  const bool accepted = decoded;
+  if (accepted) {
+    std::memset(hash, 0, 16);
+  }
+@[end if]@
+  @(ctype)__fini(&ros_message);
+  return accepted ? 0 : -1;
+}
 
 static const rosidl_typesupport_zzdds_cpp::message_type_support_callbacks_t
 callbacks_@(message_stem) = {
@@ -164,6 +209,7 @@ callbacks_@(message_stem) = {
   get_serialized_size_@(message_stem), @('true' if keyed else 'false'),
   @('compute_key_hash_' + message_stem if keyed else 'nullptr'),
   get_field_from_cdr_@(message_stem),
+  process_sample_from_cdr_@(message_stem),
 };
 
 static const rosidl_message_type_support_t handle_@(message_stem) = {
@@ -195,6 +241,7 @@ ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
 service_type = service.namespaced_type
 service_namespaces = list(service_type.namespaces)
 service_symbol = c_symbol(service_type)
+service_stem = convert_camel_case_to_lower_case_underscore(service_type.name)
 request_stem = convert_camel_case_to_lower_case_underscore(service.request_message.structure.namespaced_type.name)
 response_stem = convert_camel_case_to_lower_case_underscore(service.response_message.structure.namespaced_type.name)
 event_stem = convert_camel_case_to_lower_case_underscore(service.event_message.structure.namespaced_type.name)
@@ -203,7 +250,7 @@ event_stem = convert_camel_case_to_lower_case_underscore(service.event_message.s
 namespace @(namespace) {
 @[end for]@
 namespace typesupport_zzdds_c {
-static const rosidl_service_type_support_t handle_@(stem) = {
+static const rosidl_service_type_support_t handle_@(service_stem) = {
   rosidl_typesupport_zzdds_c::typesupport_identifier, nullptr,
   rosidl_typesupport_zzdds_c::get_service_typesupport_handle_function,
   &handle_@(request_stem), &handle_@(response_stem), &handle_@(event_stem),
@@ -220,6 +267,6 @@ extern "C" const rosidl_service_type_support_t *
 ROSIDL_TYPESUPPORT_INTERFACE__SERVICE_SYMBOL_NAME(
   rosidl_typesupport_zzdds_c, @(', '.join(service_type.namespaced_name())))()
 {
-  return &@('::'.join(service_namespaces))::typesupport_zzdds_c::handle_@(stem);
+  return &@('::'.join(service_namespaces))::typesupport_zzdds_c::handle_@(service_stem);
 }
 @[end for]@

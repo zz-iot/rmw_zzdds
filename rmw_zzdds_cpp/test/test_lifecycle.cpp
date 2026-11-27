@@ -184,6 +184,31 @@ TEST_F(RmwLifecycle, WaitSetTimesOutAndConsumesTriggeredGuardCondition)
   EXPECT_EQ(RMW_RET_OK, rmw_context_fini(&context_));
 }
 
+TEST_F(RmwLifecycle, WaitSetWakesForGuardBeyondInitialCapacity)
+{
+  ASSERT_EQ(RMW_RET_OK, rmw_init(&options_, &context_));
+  auto * first = rmw_create_guard_condition(&context_);
+  auto * extra = rmw_create_guard_condition(&context_);
+  auto * wait_set = rmw_create_wait_set(&context_, 1U);
+  ASSERT_NE(nullptr, first);
+  ASSERT_NE(nullptr, extra);
+  ASSERT_NE(nullptr, wait_set);
+
+  void * entries[] = {first->data, extra->data};
+  rmw_guard_conditions_t guards{2U, entries};
+  const rmw_time_t timeout{0U, 0U};
+  ASSERT_EQ(RMW_RET_OK, rmw_trigger_guard_condition(extra));
+  EXPECT_EQ(RMW_RET_OK, rmw_wait(nullptr, &guards, nullptr, nullptr, nullptr, wait_set, &timeout));
+  EXPECT_EQ(nullptr, entries[0]);
+  EXPECT_EQ(extra->data, entries[1]);
+
+  EXPECT_EQ(RMW_RET_OK, rmw_destroy_wait_set(wait_set));
+  EXPECT_EQ(RMW_RET_OK, rmw_destroy_guard_condition(extra));
+  EXPECT_EQ(RMW_RET_OK, rmw_destroy_guard_condition(first));
+  EXPECT_EQ(RMW_RET_OK, rmw_shutdown(&context_));
+  EXPECT_EQ(RMW_RET_OK, rmw_context_fini(&context_));
+}
+
 TEST_F(RmwLifecycle, GraphGuardConditionTracksGraphChanges)
 {
   ASSERT_EQ(RMW_RET_OK, rmw_init(&options_, &context_));

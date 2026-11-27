@@ -25,8 +25,8 @@ using rmw_zzdds_cpp::ServiceImpl;
 using rmw_zzdds_cpp::ServiceTypeSupport;
 using rmw_zzdds_cpp::SubscriptionImpl;
 
-constexpr size_t dds_guid_size = 16U;
-constexpr size_t request_header_size = dds_guid_size + sizeof(int64_t);
+constexpr size_t dds_guid_size = rmw_zzdds_cpp::service_guid_size;
+constexpr size_t request_header_size = rmw_zzdds_cpp::service_request_header_size;
 
 rosidl_message_type_support_t message_handle(
   const rosidl_typesupport_zzdds_cpp::message_type_support_callbacks_t * callbacks);
