@@ -861,17 +861,24 @@ rmw_ret_t rmw_publish(
     return RMW_RET_INVALID_ARGUMENT;
   }
   auto * impl = static_cast<PublisherImpl *>(publisher->data);
-  ZidlCdrWriter writer{};
-  if (zidl_cdr_writer_init(&writer, ZIDL_XCDR1) != ZIDL_CDR_OK) {
-    RMW_SET_ERROR_MSG("failed to initialize the CDR writer");
+  // Count the payload, then serialize it into a buffer of exactly that size.
+  const size_t size = impl->callbacks->get_serialized_size(ros_message);
+  if (size == SIZE_MAX) {
+    RMW_SET_ERROR_MSG("failed to serialize the ROS message");
+    return RMW_RET_ERROR;
+  }
+  std::unique_ptr<uint8_t[]> buffer(new (std::nothrow) uint8_t[size]);
+  if (buffer == nullptr) {
+    RMW_SET_ERROR_MSG("failed to allocate the serialized ROS message");
     return RMW_RET_BAD_ALLOC;
   }
-  const bool serialized = impl->callbacks->serialize(ros_message, &writer);
-  const rmw_ret_t result = serialized ?
-    write_serialized(impl, writer.buf, writer.len, ros_message) : RMW_RET_ERROR;
-  zidl_cdr_writer_deinit(&writer);
-  if (!serialized) {RMW_SET_ERROR_MSG("failed to serialize the ROS message");}
-  return result;
+  ZidlCdrWriter writer{};
+  zidl_cdr_writer_init_fixed(&writer, buffer.get(), size, ZIDL_XCDR1);
+  if (!impl->callbacks->serialize(ros_message, &writer) || writer.len != size) {
+    RMW_SET_ERROR_MSG("failed to serialize the ROS message");
+    return RMW_RET_ERROR;
+  }
+  return write_serialized(impl, buffer.get(), size, ros_message);
 }
 
 rmw_ret_t rmw_borrow_loaned_message(
