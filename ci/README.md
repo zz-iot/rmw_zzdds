@@ -118,3 +118,14 @@ ROS_DOMAIN_ID=119 python3 ci/mixed_rmw_smoke.py --output /tmp/rmw-mixed-smoke
 The test pairs zzdds with Fast DDS and Cyclone DDS in both directions. A
 reliable 1 KiB publisher starts first, then two successive subscriber processes
 verify matching and increasing sample sequences across a late join and restart.
+
+The pinned zzdds release leg also runs `--ros-integration smoke`. It requires
+all eight upstream same-RMW action and service targets and the mixed-vendor
+delivery test. The weekly moving Rolling leg runs `--ros-integration full`,
+which adds the complete zzdds subsets of `test_communication`, `test_rclcpp`,
+and `test_quality_of_service`. This leg is non-gating. Its per-target JUnit
+results and mixed-vendor logs are uploaded even when a suite fails. Current
+known failures include mixed Fast DDS wide strings and unsupported QoS cases.
+The reusable zzdds regression gate keeps the RMW conformance suite.
+
+The additional source pins live in `ci/rolling-integration.repos`.
