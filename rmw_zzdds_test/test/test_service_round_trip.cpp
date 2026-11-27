@@ -11,6 +11,7 @@
 #include "rmw_zzdds_test/srv/round_trip.hpp"
 #include "rmw_zzdds_test/srv/detail/round_trip__type_support.hpp"
 #include "rosidl_typesupport_interface/macros.h"
+#include "rosidl_typesupport_cpp/message_type_support.hpp"
 
 namespace
 {
@@ -28,6 +29,13 @@ TEST(ServiceTransport, request_response_round_trip_preserves_identity_and_payloa
 
   const auto * type_support = ROSIDL_TYPESUPPORT_INTERFACE__SERVICE_SYMBOL_NAME(
     rosidl_typesupport_cpp, rmw_zzdds_test, srv, RoundTrip)();
+  const auto * request_support = rosidl_typesupport_cpp::get_message_type_support_handle<
+    rmw_zzdds_test::srv::RoundTrip::Request>();
+  const auto publisher_options = rmw_get_default_publisher_options();
+  auto * diagnostics = rmw_create_publisher(
+    node, request_support, "/round_trip_request_diagnostics", &rmw_qos_profile_default,
+    &publisher_options);
+  ASSERT_NE(nullptr, diagnostics) << rmw_get_error_string().str;
   rmw_service_t * service = rmw_create_service(
     node, type_support, "/round_trip", &rmw_qos_profile_services_default);
   rmw_client_t * client = rmw_create_client(
@@ -196,6 +204,7 @@ TEST(ServiceTransport, request_response_round_trip_preserves_identity_and_payloa
   EXPECT_EQ(RMW_RET_OK, rmw_destroy_client(node, second_client));
   EXPECT_EQ(RMW_RET_OK, rmw_destroy_client(node, client));
   EXPECT_EQ(RMW_RET_OK, rmw_destroy_service(node, service));
+  EXPECT_EQ(RMW_RET_OK, rmw_destroy_publisher(node, diagnostics));
   EXPECT_EQ(RMW_RET_OK, rmw_destroy_node(node));
   EXPECT_EQ(RMW_RET_OK, rmw_shutdown(&context));
   EXPECT_EQ(RMW_RET_OK, rmw_context_fini(&context));
