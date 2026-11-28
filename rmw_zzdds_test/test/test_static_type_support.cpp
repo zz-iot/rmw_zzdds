@@ -5,6 +5,7 @@
 #include <iterator>
 #include <string>
 #include <thread>
+#include <vector>
 #include <chrono>
 
 #include <gtest/gtest.h>
@@ -56,6 +57,24 @@ const rosidl_typesupport_zzdds_cpp::message_type_support_callbacks_t * callbacks
       handle->typesupport_identifier);
   return static_cast<
     const rosidl_typesupport_zzdds_cpp::message_type_support_callbacks_t *>(handle->data);
+}
+
+// Count the payload, then write it into a buffer of exactly that size.
+std::vector<uint8_t> serialize_xcdr1(
+  const rosidl_typesupport_zzdds_cpp::message_type_support_callbacks_t * operations,
+  const void * message)
+{
+  const size_t size = operations->get_serialized_size(message);
+  if (size == SIZE_MAX) {
+    return {};
+  }
+  std::vector<uint8_t> wire(size);
+  ZidlCdrWriter writer{};
+  zidl_cdr_writer_init_fixed(&writer, wire.data(), wire.size(), ZIDL_XCDR1);
+  if (!operations->serialize(message, &writer) || writer.len != size) {
+    return {};
+  }
+  return wire;
 }
 
 template<typename Message>
@@ -129,10 +148,6 @@ TEST(StaticTypeSupport, serializes_independent_xcdr1_golden_vector)
   ASSERT_NE(nullptr, operations);
   EXPECT_STREQ("rmw_zzdds_test::msg::dds_::PrimitiveRecord_", operations->dds_type_name);
 
-  ZidlCdrWriter writer{};
-  ASSERT_EQ(ZIDL_CDR_OK, zidl_cdr_writer_init(&writer, ZIDL_XCDR1));
-  ASSERT_TRUE(operations->serialize(&message, &writer));
-
   constexpr std::array<uint8_t, 64> expected = {
     0x00, 0x01, 0x00, 0x00,
     0x01, 0xab, 0xfe, 0xff,
@@ -146,10 +161,17 @@ TEST(StaticTypeSupport, serializes_independent_xcdr1_golden_vector)
     0x02, 0x00, 0x00, 0x00,
     0x07, 0x00, 0x00, 0x00, 0xf8, 0xff, 0xff, 0xff,
   };
+  std::array<uint8_t, expected.size()> buffer{};
+  ZidlCdrWriter writer{};
+  zidl_cdr_writer_init_fixed(&writer, buffer.data(), buffer.size(), ZIDL_XCDR1);
+  ASSERT_TRUE(operations->serialize(&message, &writer));
   ASSERT_EQ(expected.size(), writer.len);
-  EXPECT_EQ(0, std::memcmp(expected.data(), writer.buf, expected.size()));
+  EXPECT_EQ(expected, buffer);
   EXPECT_EQ(expected.size(), operations->get_serialized_size(&message));
-  zidl_cdr_writer_deinit(&writer);
+
+  // Too small a buffer fails rather than truncating.
+  zidl_cdr_writer_init_fixed(&writer, buffer.data(), buffer.size() - 1, ZIDL_XCDR1);
+  EXPECT_FALSE(operations->serialize(&message, &writer));
 }
 
 TEST(StaticTypeSupport, deserializes_golden_vector_and_nested_message)
@@ -168,17 +190,15 @@ TEST(StaticTypeSupport, deserializes_golden_vector_and_nested_message)
     const rosidl_typesupport_zzdds_cpp::message_type_support_callbacks_t *>(handle->data);
   ASSERT_NE(nullptr, operations);
 
-  ZidlCdrWriter writer{};
-  ASSERT_EQ(ZIDL_CDR_OK, zidl_cdr_writer_init(&writer, ZIDL_XCDR1));
-  ASSERT_TRUE(operations->serialize(&nested, &writer));
+  const auto wire = serialize_xcdr1(operations, &nested);
+  ASSERT_FALSE(wire.empty());
 
   ZidlCdrReader reader{};
-  ASSERT_EQ(ZIDL_CDR_OK, zidl_cdr_reader_init(&reader, writer.buf, writer.len));
+  ASSERT_EQ(ZIDL_CDR_OK, zidl_cdr_reader_init(&reader, wire.data(), wire.size()));
   rmw_zzdds_test::msg::NestedRecord result;
   ASSERT_TRUE(operations->deserialize(&reader, &result));
   EXPECT_EQ(nested, result);
   EXPECT_EQ(0u, zidl_cdr_remaining(&reader));
-  zidl_cdr_writer_deinit(&writer);
 }
 
 TEST(StaticTypeSupport, rejects_truncated_and_oversized_input)
@@ -187,31 +207,29 @@ TEST(StaticTypeSupport, rejects_truncated_and_oversized_input)
   const auto * operations = callbacks();
   ASSERT_NE(nullptr, operations);
 
-  ZidlCdrWriter writer{};
-  ASSERT_EQ(ZIDL_CDR_OK, zidl_cdr_writer_init(&writer, ZIDL_XCDR1));
-  ASSERT_TRUE(operations->serialize(&original, &writer));
+  const auto wire = serialize_xcdr1(operations, &original);
+  ASSERT_FALSE(wire.empty());
 
   ZidlCdrReader truncated{};
-  ASSERT_EQ(ZIDL_CDR_OK, zidl_cdr_reader_init(&truncated, writer.buf, writer.len - 1));
+  ASSERT_EQ(ZIDL_CDR_OK, zidl_cdr_reader_init(&truncated, wire.data(), wire.size() - 1));
   rmw_zzdds_test::msg::PrimitiveRecord result;
   EXPECT_FALSE(operations->deserialize(&truncated, &result));
 
   // Replace the bounded sequence length with five while only four are legal.
   std::array<uint8_t, 64> corrupt{};
-  ASSERT_EQ(corrupt.size(), writer.len);
-  std::memcpy(corrupt.data(), writer.buf, writer.len);
+  ASSERT_EQ(corrupt.size(), wire.size());
+  std::memcpy(corrupt.data(), wire.data(), wire.size());
   corrupt[52] = 5;
   ZidlCdrReader oversized{};
   ASSERT_EQ(ZIDL_CDR_OK, zidl_cdr_reader_init(&oversized, corrupt.data(), corrupt.size()));
   EXPECT_FALSE(operations->deserialize(&oversized, &result));
 
   // A valid XCDR2 encapsulation must not be decoded using the XCDR1 layout.
-  std::memcpy(corrupt.data(), writer.buf, writer.len);
+  std::memcpy(corrupt.data(), wire.data(), wire.size());
   corrupt[1] = 0x07;
   ZidlCdrReader xcdr2{};
   ASSERT_EQ(ZIDL_CDR_OK, zidl_cdr_reader_init(&xcdr2, corrupt.data(), corrupt.size()));
   EXPECT_FALSE(operations->deserialize(&xcdr2, &result));
-  zidl_cdr_writer_deinit(&writer);
 }
 
 TEST(StaticTypeSupport, computes_canonical_big_endian_key_hash)

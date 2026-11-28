@@ -18,6 +18,7 @@ base = '/'.join([package_name] + list(interface_path.parents[0].parts) + ['detai
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <new>
 
 #include "@(base)__functions.h"
@@ -97,13 +98,8 @@ static bool deserialize_@(message_stem)(ZidlCdrReader * reader, void * untyped)
 static size_t get_serialized_size_@(message_stem)(const void * untyped)
 {
   ZidlCdrWriter writer{};
-  if (zidl_cdr_writer_init(&writer, ZIDL_XCDR1) != ZIDL_CDR_OK) {
-    return SIZE_MAX;
-  }
-  const bool ok = serialize_@(message_stem)(untyped, &writer);
-  const size_t result = ok ? writer.len : SIZE_MAX;
-  zidl_cdr_writer_deinit(&writer);
-  return result;
+  zidl_cdr_writer_init_counting(&writer, ZIDL_XCDR1);
+  return serialize_@(message_stem)(untyped, &writer) ? writer.len : SIZE_MAX;
 }
 
 static bool get_field_from_cdr_@(message_stem)(
@@ -133,25 +129,32 @@ static bool compute_key_hash_@(message_stem)(const void * untyped, uint8_t hash[
   }
   ZidlCdrWriter key_writer{};
   ZidlCdrWriter * writer = &key_writer;
-  if (zidl_cdr_writer_init(writer, ZIDL_XCDR1) != ZIDL_CDR_OK) {
-    return false;
-  }
-  zidl_cdr_writer_set_byte_order(writer, ZIDL_CDR_BE);
-  bool ok = false;
   try {
     const auto & ros_message = *static_cast<const @(cpp_type) *>(untyped);
-    ok = [&]() {
+    const auto encode = [&]() {
+      zidl_cdr_writer_set_byte_order(writer, ZIDL_CDR_BE);
 @(serialize_members(message, indent=6, keys_only=True))
       return true;
-    }();
-    if (ok) {
-      zidl_cdr_compute_key_hash(writer->buf, writer->len, hash);
+    };
+    // Count the key, then write it into a buffer of exactly that size.
+    zidl_cdr_writer_init_counting(writer, ZIDL_XCDR1);
+    if (!encode()) {
+      return false;
     }
+    const size_t key_len = writer->len;
+    std::unique_ptr<uint8_t[]> key(new (std::nothrow) uint8_t[key_len]);
+    if (key == nullptr) {
+      return false;
+    }
+    zidl_cdr_writer_init_fixed(writer, key.get(), key_len, ZIDL_XCDR1);
+    if (!encode() || writer->len != key_len) {
+      return false;
+    }
+    zidl_cdr_compute_key_hash(key.get(), key_len, hash);
+    return true;
   } catch (...) {
-    ok = false;
+    return false;
   }
-  zidl_cdr_writer_deinit(writer);
-  return ok;
 }
 @[end if]@
 
